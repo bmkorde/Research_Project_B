@@ -69,7 +69,7 @@ Ensure the following files are inside the data folder:
 ---
  
 ### 4. Open the R Markdown Scripts
-- For Part B — In RStudio, open `part_b.Rmd`
+- For Part B — In RStudio, open `Part_A.Rmd`
 ---
  
 ### 5. Knit to PDF or HTML

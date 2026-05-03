@@ -1,0 +1,3038 @@
+---
+title: "Project"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-03-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggridges)
+library(forcats)
+library(kableExtra)
+data_root <- "bbl_json"
+data_file <- "524915.json"
+data_path <- file.path(data_root,data_file)
+
+sample_json <- fromJSON(readLines(data_path, warn = FALSE))
+overs_df <- sample_json$innings[1, "overs"][[1]]
+deliveries <- overs_df$deliveries[[7]]
+wickets <- overs_df$deliveries[[7]]$wickets[[5]]
+target <- sample_json$innings$target$runs[[2]]
+```
+
+```{r}
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+
+data_root <- "bbl_json"
+files <- list.files(data_root, pattern = "*.json", full.names = TRUE)
+
+# Helper functions
+clean_venues <- function(venue) {
+  case_when(
+    venue == "Aurora Stadium" ~ "Aurora Stadium, Launceston",
+    venue == "Brisbane Cricket Ground" ~ "Brisbane Cricket Ground, Woolloongabba, Brisbane",
+    venue == "Brisbane Cricket Ground, Woolloongabba" ~ "Brisbane Cricket Ground, Woolloongabba, Brisbane",
+    venue == "Bellerive Oval" ~ "Bellerive Oval, Hobart",
+    venue == "Docklands Stadium" ~ "Docklands Stadium, Melbourne",
+    venue == "Geelong Cricket Ground" ~ "GMHBA Stadium, South Geelong, Victoria",
+    venue == "Simonds Stadium, South Geelong, Victoria" ~ "GMHBA Stadium, South Geelong, Victoria",
+    venue == "International Sports Stadium" ~ "International Sports Stadium, Coffs Harbour",
+    venue == "Manuka Oval" ~ "Manuka Oval, Canberra",
+    venue == "W.A.C.A. Ground" ~ "Western Australia Cricket Association Ground",
+    venue == "Sydney Cricket Ground" ~ "Sydney Cricket Ground, Sydney",
+    TRUE ~ venue
+  )
+}
+
+get_home_team <- function(info) {
+  venue <- info$venue
+  teams <- info$teams
+  if (venue == "Adelaide Oval" && "Adelaide Strikers" %in% teams) "Adelaide Strikers"
+  else if (venue == "Aurora Stadium, Launceston" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else if (venue == "Bellerive Oval, Hobart" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else if (venue == "Brisbane Cricket Ground, Woolloongabba, Brisbane" && "Brisbane Heat" %in% teams) "Brisbane Heat"
+  else if (venue == "Docklands Stadium, Melbourne" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Carrara Oval" && "Brisbane Heat" %in% teams) "Brisbane Heat"
+  else if (venue == "GMHBA Stadium, South Geelong, Victoria" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Melbourne Cricket Ground" && "Melbourne Stars" %in% teams) "Melbourne Stars"
+  else if (venue == "Melbourne Cricket Ground" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Perth Stadium" && "Perth Scorchers" %in% teams) "Perth Scorchers"
+  else if (venue == "Stadium Australia" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Stadium Australia" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Cricket Ground, Sydney" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Sydney Cricket Ground, Sydney" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Showground Stadium" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Showground Stadium" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Manuka Oval, Canberra" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Manuka Oval, Canberra" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Western Australia Cricket Association Ground" && "Perth Scorchers" %in% teams) "Perth Scorchers"
+  else if (venue == "University of Tasmania Stadium, Launceston" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else NA_character_
+}
+```
+
+```{r}
+playing_xi <- map_dfr(files, function(file) {
+  tryCatch({
+    json <- fromJSON(readLines(file, warn = FALSE))
+    info <- json$info
+    match_id <- as.character(str_remove(basename(file), ".json"))
+    
+    # Extract team names and players
+    teams <- info$teams
+    players_list <- info$players
+    
+    # Flatten into long format
+    map_dfr(teams, function(team_name) {
+      tibble(
+        match_id = match_id,
+        team = team_name,
+        player = players_list[[team_name]]
+      )
+    })
+    
+  }, error = function(e) {
+    message("Error extracting XI from ", file, ": ", conditionMessage(e))
+    return(tibble())
+  })
+})
+
+# Preview
+playing_xi %>% filter(match_id == unique(playing_xi$match_id)[1])
+
+
+target_df <- map_dfr(files, function(file) {
+  tryCatch({
+    json <- fromJSON(readLines(file, warn = FALSE))
+    match_id <- str_remove(basename(file), ".json")
+    
+    # Extract target from second innings if available
+    target_runs <- json$innings$target$runs[2] %||% NA_integer_
+    
+    tibble(
+      match_id = match_id,
+      target = target_runs
+    )
+    
+  }, error = function(e) {
+    message("Error extracting target from ", file, ": ", conditionMessage(e))
+    return(tibble())
+  })
+})
+
+```
+
+```{r}
+balls <- map_dfr(files, function(file) {
+  tryCatch({
+    json <- fromJSON(readLines(file, warn = FALSE))
+    info <- json$info
+    info$venue <- clean_venues(info$venue)
+    # --- Extract target score if available ---
+    target_runs <- tryCatch({
+      json$innings$target$runs[[2]] %||% NA_integer_
+    }, error = function(e) NA_integer_)
+    # --- Match-level metadata ---
+    row_meta <- tibble(
+      match_id = as.character(str_remove(basename(file), ".json")),
+      date = as.character(info$dates[[1]]),
+      team1 = as.character(info$teams[[1]]),
+      team2 = as.character(info$teams[[2]]),
+      home_team = as.character(get_home_team(info)),
+      winner = as.character(info$outcome$winner %||% NA_character_),
+      result = as.character(info$outcome$result %||% NA_character_),
+      winner_by_runs = as.integer(info$outcome$by$runs %||% NA_integer_),
+      winner_by_wickets = as.integer(info$outcome$by$wickets %||% NA_integer_),
+      venue = as.character(info$venue),
+      target = target_runs
+    )
+    
+    # --- Innings-level iteration ---
+    map_dfr(1:nrow(json$innings), function(i) {
+      team <- as.character(json$innings[i, "team"][[1]])
+      overs_df <- json$innings[i, "overs"][[1]]
+      
+      # --- Over-level iteration ---
+      map_dfr(1:nrow(overs_df), function(o) {
+        deliveries <- overs_df$deliveries[[o]]
+        over_num <- as.integer(overs_df$over[o])
+        
+        # --- Delivery-level flattening ---
+        deliveries_flat <- deliveries %>%
+          mutate(
+            innings = as.integer(i),
+            team = as.character(team),
+            over = over_num,
+            ball_in_over = row_number(),
+            delivery = as.numeric(sprintf("%d.%d", over_num, ball_in_over)),
+            batter = as.character(batter %||% NA_character_),
+            bowler = as.character(bowler %||% NA_character_),
+            non_striker = as.character(non_striker %||% NA_character_),
+            runs_batter = as.integer(runs$batter %||% 0),
+            runs_extras = as.integer(runs$extras %||% 0),
+            runs_total = as.integer(runs$total %||% 0),
+            powerplay = as.logical(over_num < 6),
+            powerplay_type = as.character(if (over_num < 6) "Mandatory" else NA_character_)
+          )
+        
+        # --- Wicket logic safely extracted row-wise ---
+        wicket_info <- map_dfr(seq_len(nrow(deliveries)), function(b) {
+          wkts <- deliveries$wickets[[b]]
+          tibble(
+            wicket = !is.null(wkts),
+            wicket_type = if (!is.null(wkts)) wkts$kind[1] else NA_character_,
+            wicket_player_out = if (!is.null(wkts)) wkts$player_out[1] else NA_character_
+          )
+        })
+        
+        # --- Combine safely ---
+        bind_cols(deliveries_flat, wicket_info)
+      })
+    }) %>% bind_cols(row_meta[rep(1, nrow(.)), ])
+    
+  }, error = function(e) {
+    message("Error processing ", file, ": ", conditionMessage(e))
+    return(tibble())
+  })
+})
+
+balls <- balls %>% arrange(date,match_id, innings, delivery)
+head(balls)
+
+
+
+```
+
+```{r}
+library(dplyr)
+
+# --- Batting scorecard ---
+batting_scorecard <- balls %>%
+  group_by(match_id, batter) %>%
+  summarise(
+    balls_faced = n(),
+    runs = sum(runs_batter, na.rm = TRUE),
+    fours = sum(runs_batter == 4, na.rm = TRUE),
+    sixes = sum(runs_batter == 6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(match_id, desc(runs))
+
+# --- Bowling scorecard ---
+bowling_scorecard <- balls %>%
+  group_by(match_id, bowler) %>%
+  summarise(
+    balls_bowled = n(),
+    overs = balls_bowled %/% 6 + (balls_bowled %% 6) / 10,
+    dot_balls = sum(runs_total == 0, na.rm = TRUE),
+    wickets = sum(wicket & !is.na(wicket_player_out), na.rm = TRUE),
+    runs_conceded = sum(runs_total, na.rm = TRUE),
+    runs_extras = sum(runs_extras, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(match_id, desc(wickets))
+
+
+# --- View one match example ---
+match_example <- unique(balls$match_id)[1]
+
+batting_scorecard %>% filter(match_id == match_example)
+bowling_scorecard %>% filter(match_id == match_example)
+```
+
+```{r}
+snapshot_df <- balls %>%
+  filter(innings == 2) %>%
+  group_by(match_id) %>%
+  mutate(
+    balls_bowled = row_number(),
+    overs_completed = floor(balls_bowled / 6) + (balls_bowled %% 6) / 10,
+    current_runs = cumsum(runs_total),
+    wickets_lost = cumsum(wicket),
+    balls_remaining = 120 - balls_bowled,
+    run_rate = current_runs / overs_completed,
+    required_run_rate = if_else(innings == 2 & !is.na(target),
+                            (target - current_runs) / (balls_remaining / 6),
+                            NA_real_),
+    batting_team = team,
+    bowling_team = if_else(team == team1, team2, team1),
+    target = target
+  ) %>%
+  filter(overs_completed >= 13) %>%
+  slice_head(n = 1) %>%  # First delivery after 13th over
+  ungroup() %>%
+  mutate(
+    remaining_wickets = 10 - wickets_lost,
+    match_winner = if_else(batting_team == winner, 1, 0),
+    
+  ) %>%
+  select(
+    match_id,
+    date,
+    venue,
+    batting_team,
+    bowling_team,
+    target,
+    current_runs,
+    wickets_lost,
+    remaining_wickets,
+    balls_bowled,
+    balls_remaining,
+    overs_completed,
+    run_rate,
+    required_run_rate,
+    powerplay,
+    home_team,
+    winner,
+    match_winner
+  )
+
+
+```
+
+
+
+```{r}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+library(ggplot2)
+library(broom)
+library(dplyr)
+
+# Step 1: Prepare data
+model_data <- snapshot_df %>%
+  mutate(across(c(batting_team, bowling_team, venue, home_team), as.factor),
+         match_winner = as.factor(match_winner)) %>%
+  drop_na(match_winner)
+
+# Step 2: Train-test split
+set.seed(42)
+train_index <- createDataPartition(model_data$match_winner, p = 0.8, list = FALSE)
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+# Step 3: Align factor levels
+for (col in c("batting_team", "bowling_team", "venue", "home_team")) {
+  test_data[[col]] <- factor(test_data[[col]], levels = levels(train_data[[col]]))
+}
+
+# Step 4: Drop rows with unseen levels (now NA)
+test_data <- test_data %>%
+  filter(!is.na(batting_team), !is.na(bowling_team), !is.na(venue), !is.na(home_team))
+
+# Step 5: Logistic regression model
+log_model <- glm(match_winner ~ current_runs + wickets_lost + remaining_wickets +
+                   balls_remaining + overs_completed + run_rate + required_run_rate +
+                   powerplay + batting_team + bowling_team + venue + home_team,
+                 data = train_data, family = binomial)
+
+summary(log_model)
+
+# Step 6: Predict and evaluate
+log_probs <- predict(log_model, test_data, type = "response")
+log_pred <- ifelse(log_probs > 0.5, 1, 0)
+confusionMatrix(factor(log_pred), test_data$match_winner)
+
+# Step 7: Decision tree model
+tree_model <- rpart(match_winner ~ current_runs + wickets_lost + remaining_wickets +
+                      balls_remaining + overs_completed + run_rate + required_run_rate +
+                      powerplay + batting_team + bowling_team + venue + home_team,
+                    data = train_data, method = "class", control = rpart.control(cp = 0.01))
+
+tree_pred <- predict(tree_model, test_data, type = "class")
+confusionMatrix(tree_pred, test_data$match_winner)
+
+# Step 8: Visualize decision tree
+rpart.plot(tree_model, type = 2, extra = 104, fallen.leaves = TRUE)
+
+# Step 9: ROC curve and AUC
+library(pROC)
+
+# Compute ROC
+roc_curve <- roc(test_data$match_winner, log_probs)
+
+# Extract AUC
+auc_value <- auc(roc_curve)
+
+plot(
+  roc_curve,
+  col = "#1f78b4",          
+  lwd = 3,                  
+  main = "ROC Curve - Logistic Regression",
+  cex.main = 1.3,
+  cex.lab = 1.2,
+  cex.axis = 1.1,
+  legacy.axes = TRUE        # keeps 0–1 axes
+)
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray60", lwd = 2)
+
+# Add grid
+grid(col = "gray90", lwd = 1, lty = 1)
+
+# Add AUC text box
+legend(
+  "bottomright",
+  legend = paste("AUC =", round(auc_value, 3)),
+  bty = "n",
+  text.col = "#1f78b4",
+  cex = 1.2
+)
+
+# Step 10: Variable importance (logistic regression)
+tidy(log_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_estimate = abs(estimate)) %>%
+  ggplot(aes(x = reorder(term, abs_estimate), y = abs_estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Variable Importance (Logistic Regression)",
+       x = "Predictor", y = "Absolute Coefficient")
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Prepare bowling summary consistent with batting_scorecard naming
+
+bowling_summary <- bowling_scorecard %>%
+rename(balls_bowled = balls_bowled, runs_conceded = runs_conceded, wickets_taken = wickets) %>%
+select(match_id, bowler, balls_bowled, overs, wickets_taken, runs_conceded) %>%
+group_by(bowler) %>%
+summarise(
+balls_bowled = sum(balls_bowled, na.rm = TRUE),
+wickets = sum(wickets_taken, na.rm = TRUE),
+runs_conceded = sum(runs_conceded, na.rm = TRUE),
+.groups = "drop"
+) %>%
+rename(player = bowler)
+
+# Prepare batting summary
+
+batting_summary <- batting_scorecard %>%
+group_by(batter) %>%
+summarise(
+balls_faced = sum(balls_faced, na.rm = TRUE),
+runs = sum(runs, na.rm = TRUE),
+fours = sum(fours, na.rm = TRUE),
+sixes = sum(sixes, na.rm = TRUE),
+.groups = "drop"
+) %>%
+rename(player = batter)
+
+# Combine batting + bowling (players may appear in only one)
+
+player_stats <- full_join(batting_summary, bowling_summary, by = "player") %>%
+replace_na(list(
+balls_faced = 0,
+runs = 0,
+fours = 0,
+sixes = 0,
+balls_bowled = 0,
+wickets = 0,
+runs_conceded = 0
+))
+
+# Convert balls_bowled to overs_decimal for a readable value
+
+player_stats <- player_stats %>%
+mutate(
+overs_bowled = balls_bowled / 6,
+# Classification rules (allrounder first)
+role = case_when(
+balls_faced >= 20 & balls_bowled >= 12 ~ "Allrounder",       # >=2 overs (12 balls) and >=20 balls faced
+balls_bowled >= 18 & !(balls_faced >= 20 & balls_bowled >= 12) ~ "Bowler",  # >=3 overs (18 balls) & not allrounder
+balls_faced >= 20 & !(balls_faced >= 20 & balls_bowled >= 12) ~ "Batter",   # >=20 balls faced & not allrounder
+TRUE ~ "Other"
+)
+)
+
+# Inspect top few
+
+player_stats %>% arrange(desc(role), desc(runs)) %>% slice_head(n = 20)
+
+
+# 1) Count of players by role
+
+role_counts <- player_stats %>% count(role) %>% arrange(desc(n))
+ggplot(role_counts, aes(x = reorder(role, n), y = n, fill = role)) +
+geom_col(show.legend = FALSE) +
+coord_flip() +
+labs(title = "Number of Players by Role (based on thresholds)",
+x = "Role", y = "Players") +
+theme_minimal(base_size = 12)
+
+
+
+
+# 3) Top players in each role (by a sensible metric)
+
+top_n <- 12
+
+# Top batters by runs
+
+top_batters <- player_stats %>% filter(role == "Batter" | role == "Allrounder") %>% arrange(desc(runs)) %>% slice_head(n = top_n) %>% mutate(metric = runs)
+
+# Top bowlers by wickets
+
+top_bowlers <- player_stats %>% filter(role == "Bowler" | role == "Allrounder") %>% arrange(desc(wickets)) %>% slice_head(n = top_n) %>% mutate(metric = wickets)
+
+# Combine and plot as facet
+
+top_combined <- bind_rows(
+top_batters %>% mutate(kind = "Top Batters (by runs)"),
+top_bowlers %>% mutate(kind = "Top Bowlers (by wickets)")
+) %>%
+mutate(player = forcats::fct_reorder(player, metric))
+
+
+
+# Optional: produce a small summary table and save for inspection
+
+role_summary_table <- player_stats %>%
+arrange(desc(role), desc(runs)) %>%
+select(player, role, runs, balls_faced, wickets, balls_bowled, overs_bowled)
+
+
+
+```
+
+
+
+```{r}
+# --- Decision tree ROC & AUC ---
+# 1) Predicted probabilities from rpart (probability of class "1")
+# ensure tree_model is the fitted rpart object and test_data is your test set
+tree_probs <- predict(tree_model, test_data, type = "prob")[, "1"]
+
+# 2) Prepare true labels as numeric 0/1 (safe conversion)
+if (is.factor(test_data$match_winner)) {
+  # try straightforward conversion if levels are "0"/"1"
+  true_labels <- suppressWarnings(as.numeric(as.character(test_data$match_winner)))
+} else {
+  true_labels <- as.numeric(test_data$match_winner)
+}
+
+# fallback mapping if above produced NA (e.g., "loss"/"win" labels)
+if (any(is.na(true_labels))) {
+  levs <- unique(as.character(test_data$match_winner))
+  message("Detected non-numeric match_winner levels: ", paste(levs, collapse = ", "))
+  # adjust the mapping below to match your factor labels if different
+  true_labels <- ifelse(as.character(test_data$match_winner) %in% c("1", "win", "Win", "WIN"), 1, 0)
+}
+
+# 3)checks
+stopifnot(length(tree_probs) == length(true_labels))
+if (length(unique(true_labels)) < 2) stop("true_labels has only one class — cannot compute ROC.")
+if (all(is.na(tree_probs))) stop("tree_probs are all NA — check predict() call.")
+
+# 4) Compute ROC and AUC
+roc_tree <- roc(response = true_labels, predictor = tree_probs, quiet = TRUE)
+auc_tree <- auc(roc_tree)
+cat("Decision tree AUC:", round(auc_tree, 4), "\n")
+
+
+
+
+```
+
+```{r}
+
+# 1A: Balls faced by role — Ridgeline plot (filtered & cleaner)
+ggplot(player_stats %>% filter(role != "Other", balls_faced > 0),
+       aes(x = balls_faced, y = role, fill = role)) +
+  geom_density_ridges(
+    alpha          = 0.85,
+    scale          = 1.2,
+    rel_min_height = 0.01,
+    quantile_lines = TRUE,
+    quantiles      = 2
+  ) +
+  scale_fill_manual(values = c(
+    "Batter"     = "#1D9E75",
+    "Bowler"     = "#378ADD",
+    "Allrounder" = "#EF9F27"
+  )) +
+  scale_x_continuous(
+    labels = scales::comma,
+    limits = c(0, 2500),          # clip long tail — covers 95%+ of players
+    breaks = seq(0, 1500, 250)    # clean tick marks every 250
+  ) +
+  labs(
+    title    = "Distribution of balls faced by player role",
+    subtitle = "Median line shown | x-axis capped at 2,500 balls to improve readability",
+    x        = "Balls faced (career total)",
+    y        = "Player role"
+  ) +
+  theme_ridges(font_size = 13) +
+  theme(
+    legend.position = "none",
+    plot.title      = element_text(size = 15, face = "bold"),
+    plot.subtitle   = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+    axis.title.x    = element_text(size = 12, hjust = 0.5),
+    axis.title.y    = element_text(size = 12, hjust = 0.5),
+    panel.grid.minor = element_blank()   # removes minor gridlines for cleaner look
+  )
+```
+
+```{r}
+# 1B: Balls bowled by role — Ridgeline plot (fixed overlap)
+ggplot(player_stats %>% filter(role != "Other", balls_bowled > 0),
+       aes(x = balls_bowled, y = role, fill = role)) +
+  geom_density_ridges(
+    alpha          = 0.75,
+    scale          = 0.9,          # reduced from 1.2 — prevents overlap
+    rel_min_height = 0.01,
+    quantile_lines = TRUE,
+    quantiles      = 2
+  ) +
+  scale_fill_manual(values = c(
+    "Batter"     = "#1D9E75",
+    "Bowler"     = "#378ADD",
+    "Allrounder" = "#EF9F27"
+  )) +
+  scale_x_continuous(
+    labels = scales::comma,
+    limits = c(0, 1500),
+    breaks = seq(0, 1500, 250)
+  ) +
+  scale_y_discrete(expand = expansion(add = c(0.5, 1.2))) +  # more vertical breathing room
+  labs(
+    title    = "Distribution of balls bowled by player role",
+    subtitle = "Median line shown | x-axis capped at 1,500 balls to improve readability",
+    x        = "Balls bowled (career total)",
+    y        = "Player role"
+  ) +
+  theme_ridges(font_size = 13) +
+  theme(
+    legend.position  = "none",
+    plot.title       = element_text(size = 15, face = "bold"),
+    plot.subtitle    = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+    axis.title.x     = element_text(size = 12, hjust = 0.5),
+    axis.title.y     = element_text(size = 12, hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+
+# ============================================================
+# STEP 1A: Compute average batting position per player
+# ============================================================
+
+batting_position <- balls %>%
+  filter(innings %in% c(1, 2)) %>%
+  group_by(match_id, innings, batter) %>%
+  summarise(first_ball = min(delivery), .groups = "drop") %>%
+  # Rank batters within each innings by when they first faced a ball
+  group_by(match_id, innings) %>%
+  mutate(batting_position = rank(first_ball, ties.method = "first")) %>%
+  ungroup() %>%
+  group_by(batter) %>%
+  summarise(
+    avg_batting_position = round(mean(batting_position, na.rm = TRUE), 2),
+    matches_batted       = n(),
+    .groups = "drop"
+  ) %>%
+  rename(player = batter)
+
+# Preview
+batting_position %>% arrange(avg_batting_position) %>% head(10)
+
+# ============================================================
+# STEP 1B: Position weight — top-order worth more than tail
+# ============================================================
+# Weight formula: position 1 = 1.0, position 11 = 0.0
+# Linear decay: w = (11 - avg_position) / 10
+# This means:
+#   Position 1  → weight 1.0
+#   Position 5  → weight 0.6
+#   Position 8  → weight 0.3
+#   Position 11 → weight 0.0
+
+batting_position <- batting_position %>%
+  mutate(
+    position_weight = (11 - avg_batting_position) / 10,
+    position_weight = pmax(pmin(position_weight, 1), 0) # clamp to [0, 1]
+  )
+
+# ============================================================
+# STEP 1C: Merge position weight into player_stats and
+#           compute position-adjusted W_batter
+# ============================================================
+
+player_stats <- player_stats %>%
+  left_join(batting_position %>%
+              select(player, avg_batting_position, position_weight),
+            by = "player") %>%
+  mutate(
+    # Fill missing position weight with 0 (never batted)
+    position_weight = replace_na(position_weight, 0),
+
+    strike_rate = ifelse(balls_faced > 0,
+                         (runs / balls_faced) * 100,
+                         NA_real_),
+
+    # Raw score = SR × position weight
+    # Players who never batted get 0
+    sr_position_raw = case_when(
+      balls_faced > 0 ~ strike_rate * position_weight,
+      TRUE            ~ 0
+    ),
+
+    # Normalise to 0-1 =
+    W_batter = case_when(
+      balls_faced > 0 ~
+        (sr_position_raw - min(sr_position_raw[balls_faced > 0], na.rm = TRUE)) /
+        (max(sr_position_raw[balls_faced > 0], na.rm = TRUE) -
+         min(sr_position_raw[balls_faced > 0], na.rm = TRUE)),
+      balls_faced == 0 ~ 0
+    )
+  )
+
+# ============================================================
+# SANITY CHECK — position-adjusted W_batter
+# ============================================================
+
+# Should show top-order high-SR players ranked highest
+player_stats %>%
+  filter(balls_faced > 0) %>%
+  select(player, role, avg_batting_position, position_weight,
+         strike_rate, sr_position_raw, W_batter) %>%
+  arrange(desc(W_batter)) %>%
+  slice_head(n = 20) %>%
+  print()
+
+# Compare: same player's old vs new score
+# A tail-end slogger (pos 10) with high SR should now rank LOWER
+# than a top-order batter (pos 3) with similar SR
+player_stats %>%
+  filter(balls_faced > 0) %>%
+  select(player, role, avg_batting_position, strike_rate, W_batter) %>%
+  arrange(desc(strike_rate)) %>%
+  slice_head(n = 20) %>%
+  print()
+
+# Summary by role — mean position weight
+player_stats %>%
+  filter(role != "Other") %>%
+  group_by(role) %>%
+  summarise(
+    mean_avg_position    = round(mean(avg_batting_position, na.rm = TRUE), 2),
+    mean_position_weight = round(mean(position_weight,      na.rm = TRUE), 3),
+    mean_W_batter        = round(mean(W_batter,             na.rm = TRUE), 3),
+    .groups = "drop"
+  ) %>%
+  print()
+
+
+# Step 2: Full view including bowlers
+batter_weights <- player_stats %>%
+  filter(role != "Other") %>%
+  select(player, role, balls_faced, runs, strike_rate, W_batter) %>%
+  arrange(desc(W_batter))
+
+# Preview top 20
+batter_weights %>%
+  slice_head(n = 20) %>%
+  print()
+
+# Preview bowlers specifically — to verify 0s and non-zero weights
+batter_weights %>%
+  filter(role == "Bowler") %>%
+  arrange(desc(W_batter)) %>%
+  slice_head(n = 20) %>%
+  print()
+
+
+# Step 3: Plot — now shows all three roles
+ggplot(batter_weights %>% filter(role != "Other"),
+       aes(x = W_batter, fill = role)) +
+  geom_histogram(bins = 25, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = c(
+    "Batter"     = "#1D9E75",
+    "Allrounder" = "#EF9F27",
+    "Bowler"     = "#378ADD"
+  )) +
+  labs(
+    title    = "Batter weightage distribution (W_batter) by role",
+    subtitle = "Batters/Allrounders normalised by SR | Bowlers: 0 if never batted, SR-based if they have",
+    x        = "Batter weight (0 = no batting contribution, 1 = highest SR)",
+    y        = "Number of players",
+    fill     = "Role"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle    = element_text(colour = "grey50", size = 10),
+    strip.text       = element_text(face = "bold"),
+    legend.position  = "none"
+  )
+
+
+# Step 4: Summary statistics per role for report
+player_stats %>%
+  filter(role != "Other") %>%
+  group_by(role) %>%
+  summarise(
+    n                  = n(),
+    batted             = sum(balls_faced > 0),
+    never_batted       = sum(balls_faced == 0),
+    mean_SR            = round(mean(strike_rate, na.rm = TRUE), 2),
+    median_SR          = round(median(strike_rate, na.rm = TRUE), 2),
+    mean_W_batter      = round(mean(W_batter, na.rm = TRUE), 3),
+    .groups            = "drop"
+  ) %>%
+  print()
+ 
+```
+```{r}
+# ============================================================
+# BOWLER WEIGHTAGE 
+# ============================================================
+
+# Step 1: Compute raw metrics for all players
+player_stats <- player_stats %>%
+  mutate(
+    # Economy rate: runs per over (NA if never bowled)
+    economy_rate = ifelse(balls_bowled > 0,
+                          (runs_conceded / balls_bowled) * 6,
+                          NA_real_),
+
+    # Bowling SR: balls per wicket (NA if no wickets taken)
+    bowling_sr   = ifelse(wickets > 0,
+                          balls_bowled / wickets,
+                          NA_real_)
+  )
+
+# Step 2: Invert both metrics
+# Separate mutate so max() reliably references finalised columns from Step 1
+player_stats <- player_stats %>%
+  mutate(
+    # Invert economy: best bowler (lowest economy) gets highest score
+    # Players who never bowled get 0
+    economy_score = ifelse(
+      balls_bowled > 0,
+      max(economy_rate, na.rm = TRUE) - economy_rate,
+      0
+    ),
+
+    # Invert bowling SR: fastest wicket-taker gets highest score
+    # Players with 0 wickets get 0
+    bowling_sr_score = ifelse(
+      !is.na(bowling_sr),
+      max(bowling_sr, na.rm = TRUE) - bowling_sr,
+      0
+    )
+  )
+
+# Step 3: Normalise and compute final W_bowler
+# Separate mutate so normalisation references finalised scores from Step 2
+player_stats <- player_stats %>%
+  mutate(
+    # Normalise economy score to 0–1
+    # Players who never bowled get 0
+    econ_norm = ifelse(
+      balls_bowled > 0,
+      (economy_score - min(economy_score[balls_bowled > 0], na.rm = TRUE)) /
+      (max(economy_score[balls_bowled > 0], na.rm = TRUE) -
+       min(economy_score[balls_bowled > 0], na.rm = TRUE)),
+      0
+    ),
+
+    # Normalise bowling SR score to 0–1
+    # Players with no wickets get 0
+    sr_norm = ifelse(
+      !is.na(bowling_sr),
+      (bowling_sr_score - min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)) /
+      (max(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE) -
+       min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)),
+      0
+    ),
+
+    # Final W_bowler: economy 50% + bowling SR 50%
+    # All roles:
+    # Bowlers/Allrounders who bowl  — proper weighted score
+    # Batters who have bowled       — score on same scale
+    # Players who never bowled      — 0
+    W_bowler = 0.5 * econ_norm + 0.5 * sr_norm
+  )
+
+
+# ============================================================
+# FILTER VIEW FOR INSPECTION
+# ============================================================
+
+bowler_weights <- player_stats %>%
+  filter(role != "Other") %>%
+  select(player, role, balls_bowled, wickets, runs_conceded,
+         economy_rate, bowling_sr,
+         economy_score, bowling_sr_score,
+         econ_norm, sr_norm, W_bowler) %>%
+  arrange(desc(W_bowler))
+
+# Preview top 20
+bowler_weights %>%
+  slice_head(n = 20) %>%
+  print()
+
+
+# ============================================================
+# PLOTS
+# ============================================================
+
+# Plot 1: W_bowler distribution by role
+ggplot(player_stats %>% filter(role != "Other"),
+       aes(x = W_bowler, fill = role)) +
+  geom_histogram(bins = 25, colour = "white",
+                 linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = c(
+    "Bowler"     = "#378ADD",
+    "Allrounder" = "#EF9F27",
+    "Batter"     = "#1D9E75"
+  )) +
+  labs(
+    title    = "Bowler weightage distribution (W_bowler) by role",
+    subtitle = "Economy (50%) + bowling SR (50%) | 0 = never bowled, 1 = strongest bowler",
+    x        = "Bowler weight (0 = no bowling contribution, 1 = strongest)",
+    y        = "Number of players",
+    fill     = "Role"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle   = element_text(colour = "grey50", size = 10),
+    strip.text      = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+
+# Plot 2: Economy rate distribution by role — ridgeline
+ggplot(player_stats %>% filter(role != "Other", balls_bowled > 0),
+       aes(x = economy_rate, y = role, fill = role)) +
+  geom_density_ridges(
+    alpha          = 0.85,
+    scale          = 0.9,
+    rel_min_height = 0.01,
+    quantile_lines = TRUE,
+    quantiles      = 2
+  ) +
+  scale_fill_manual(values = c(
+    "Bowler"     = "#378ADD",
+    "Allrounder" = "#EF9F27",
+    "Batter"     = "#1D9E75"
+  )) +
+  scale_x_continuous(
+    limits = c(0, 20),
+    breaks = seq(0, 20, 2)
+  ) +
+  labs(
+    title    = "Economy rate distribution by player role",
+    subtitle = "Median line shown | lower economy = better bowler",
+    x        = "Economy rate (runs per over)",
+    y        = "Player role"
+  ) +
+  theme_ridges(font_size = 13) +
+  theme(
+    legend.position  = "none",
+    plot.title       = element_text(size = 15, face = "bold"),
+    plot.subtitle    = element_text(size = 10, colour = "grey50",
+                                    margin = margin(b = 10)),
+    axis.title.x     = element_text(size = 12, hjust = 0.5),
+    axis.title.y     = element_text(size = 12, hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+
+# Plot 3: Bowling SR distribution by role — ridgeline
+ggplot(player_stats %>% filter(role != "Other", !is.na(bowling_sr)),
+       aes(x = bowling_sr, y = role, fill = role)) +
+  geom_density_ridges(
+    alpha          = 0.75,
+    scale          = 0.7,
+    rel_min_height = 0.01,
+    quantile_lines = TRUE,
+    quantiles      = 2
+  ) +
+  scale_fill_manual(values = c(
+    "Bowler"     = "#378ADD",
+    "Allrounder" = "#EF9F27",
+    "Batter"     = "#1D9E75"
+  )) +
+  scale_x_continuous(
+    limits = c(0, 60),
+    breaks = seq(0, 60, 10)
+  ) +
+  scale_y_discrete(expand = expansion(add = c(0.5, 1.5))) + 
+  labs(
+    title    = "Bowling strike rate distribution by player role",
+    subtitle = "Median line shown | lower SR = takes wickets faster = better bowler",
+    x        = "Bowling strike rate (balls per wicket)",
+    y        = "Player role"
+  ) +
+  theme_ridges(font_size = 13) +
+  theme(
+    legend.position  = "none",
+    plot.title       = element_text(size = 15, face = "bold"),
+    plot.subtitle    = element_text(size = 10, colour = "grey50",
+                                    margin = margin(b = 10)),
+    axis.title.x     = element_text(size = 12, hjust = 0.5),
+    axis.title.y     = element_text(size = 12, hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+
+# ============================================================
+# SUMMARY TABLE FOR REPORT
+# ============================================================
+
+player_stats %>%
+  filter(role != "Other") %>%
+  group_by(role) %>%
+  summarise(
+    n                = n(),
+    bowled           = sum(balls_bowled > 0),
+    never_bowled     = sum(balls_bowled == 0),
+    took_wickets     = sum(wickets > 0),
+    mean_econ        = round(mean(economy_rate,  na.rm = TRUE), 2),
+    median_econ      = round(median(economy_rate, na.rm = TRUE), 2),
+    mean_bowling_sr  = round(mean(bowling_sr,     na.rm = TRUE), 2),
+    mean_W_bowler    = round(mean(W_bowler,        na.rm = TRUE), 3),
+    .groups          = "drop"
+  ) %>%
+  print()
+```
+```{r}
+# SECTION 4: COMPUTE RBD AND RSO AT 13-OVER SNAPSHOT
+# ============================================================
+ 
+# Merge batter weights into playing XI
+playing_xi_weights <- playing_xi %>%
+  left_join(batter_weights %>% select(player, W_batter, strike_rate), by = "player") %>%
+  left_join(bowler_weights %>% select(player, W_bowler, economy_rate, bowling_sr), by = "player") %>%
+  mutate(
+    W_batter = replace_na(W_batter, 0),
+    W_bowler = replace_na(W_bowler, 0)
+  )
+ 
+# For each match, find who has been dismissed by the 13-over mark
+# (those who appear in balls as wicket_player_out before overs_completed >= 13)
+ 
+dismissed_by_13 <- balls %>%
+  filter(innings == 2, wicket == TRUE, !is.na(wicket_player_out)) %>%
+  group_by(match_id) %>%
+  filter(over < 13) %>%
+  select(match_id, wicket_player_out) %>%
+  rename(player = wicket_player_out) %>%
+  ungroup()
+
+
+balls_bowled_by_13 <- balls %>%
+  filter(innings == 2) %>%
+  group_by(match_id) %>%
+  filter(over < 13) %>%
+  group_by(match_id, bowler) %>%
+  summarise(
+    balls_used = sum(
+      (is.na(extras$wides) | extras$wides == 0) &
+      (is.na(extras$noballs) | extras$noballs == 0)
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(overs_used = balls_used / 6) %>%
+  filter(balls_used > 0)
+ 
+rbd_df <- snapshot_df %>%
+  select(match_id, batting_team) %>%
+  left_join(
+    playing_xi_weights %>% select(match_id, team, player, W_batter),
+    by = c("match_id", "batting_team" = "team")
+  ) %>%
+  anti_join(dismissed_by_13, by = c("match_id", "player")) %>%
+  group_by(match_id) %>%
+  summarise(RBD = sum(W_batter, na.rm = TRUE), .groups = "drop")
+ 
+rso_df <- snapshot_df %>%
+  select(match_id, bowling_team) %>%
+  left_join(
+    # Only include specialist bowlers/allrounders with meaningful W_bowler
+    playing_xi_weights %>%
+      select(match_id, team, player, W_bowler) %>%
+      left_join(player_stats %>% select(player, role), by = "player") %>%
+      filter(role %in% c("Bowler", "Allrounder"), W_bowler > 0.3),
+    by = c("match_id", "bowling_team" = "team")
+  ) %>%
+  left_join(
+    balls_bowled_by_13 %>% rename(player = bowler),
+    by = c("match_id", "player")
+  ) %>%
+  mutate(
+    overs_used      = replace_na(overs_used, 0),
+    overs_remaining = pmax(4 - overs_used, 0),
+  ) %>%
+  group_by(match_id) %>%
+  arrange(match_id, desc(W_bowler)) %>%
+  mutate(
+    cum_overs_before = lag(cumsum(overs_remaining), default = 0),
+    overs_allocated  = pmin(overs_remaining, 7 - cum_overs_before),
+    overs_allocated  = pmax(overs_allocated, 0)
+  ) %>%
+  # Keep only bowlers contributing to 7 overs
+  filter(overs_allocated > 0) %>%
+  
+  # Compute weighted contribution
+  mutate(weighted_overs = overs_allocated * W_bowler) %>%
+  summarise(RSO = sum(weighted_overs, na.rm = TRUE), .groups = "drop")
+
+```
+
+
+```{r}
+# ============================================================
+# SECTION 5: ATTACH RBD AND RSO TO snapshot_df FOR MODELLING
+# ============================================================
+ 
+snapshot_df_enhanced <- snapshot_df %>%
+  left_join(rbd_df, by = "match_id") %>%
+  left_join(rso_df, by = "match_id") %>%
+  mutate(
+    RBD = replace_na(RBD, 0),
+    RSO = replace_na(RSO, 0)
+  )
+ 
+# Preview
+snapshot_df_enhanced %>%
+  select(match_id, batting_team, bowling_team, current_runs, wickets_lost,
+         required_run_rate, RBD, RSO, match_winner) %>%
+  head(10) %>%
+  print()
+```
+
+```{r}
+# ============================================================
+# SECTION 6: HISTOGRAMS OF RBD AND RSO
+# ============================================================
+ 
+# RBD histogram — shows spread of remaining batting resource at 13 overs
+ggplot(snapshot_df_enhanced, aes(x = RBD)) +
+  geom_histogram(bins = 30, fill = "#1D9E75", colour = "white",
+                 linewidth = 0.3, alpha = 0.85) +
+  geom_vline(aes(xintercept = mean(RBD, na.rm = TRUE)),
+             colour = "#0F6E56", linetype = "dashed", linewidth = 0.8) +
+  labs(
+    title    = "Remaining Batting Depth (RBD) at 13-over mark",
+    subtitle = "Weighted sum of normalised strike rates for batters yet to bat",
+    x        = "RBD score",
+    y        = "Number of matches"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10))
+ 
+# RSO histogram — shows spread of remaining specialist bowling at 13 overs
+ggplot(snapshot_df_enhanced, aes(x = RSO)) +
+  geom_histogram(bins = 30, fill = "#378ADD", colour = "white",
+                 linewidth = 0.3, alpha = 0.85) +
+  geom_vline(aes(xintercept = mean(RSO, na.rm = TRUE)),
+             colour = "#185FA5", linetype = "dashed", linewidth = 0.8) +
+  labs(
+    title    = "Remaining Specialist Overs (RSO) at 13-over mark",
+    subtitle = "Weighted sum of bowler quality × overs remaining for bowling team",
+    x        = "RSO score",
+    y        = "Number of matches"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10))
+```
+
+```{r}
+# ============================================================
+# SECTION 7: CORRELATION CHECK — RBD/RSO vs match outcome
+# ============================================================
+
+ 
+snapshot_df_enhanced <- snapshot_df %>%
+  left_join(rbd_df, by = "match_id") %>%
+  left_join(rso_df, by = "match_id") %>%
+  mutate(
+    RBD = replace_na(RBD, 0),
+    RSO = replace_na(RSO, 0),
+    # Lump venues seen in fewer than 20 matches
+    venue_lumped = fct_lump_min(as.factor(venue), min = 20)
+  )
+# Boxplot: RBD by outcome
+ggplot(snapshot_df_enhanced %>%
+         mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")),
+       aes(x = outcome, y = RBD, fill = outcome)) +
+  geom_boxplot(alpha = 0.75, width = 0.4, outlier.shape = 21) +
+  scale_fill_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(
+    title    = "RBD vs match outcome",
+    subtitle = "Higher remaining batting depth tends to correlate with winning",
+    x        = "Match outcome (batting team)",
+    y        = "RBD score"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        plot.subtitle    = element_text(colour = "grey50", size = 10))
+ 
+# Boxplot: RSO by outcome
+ggplot(snapshot_df_enhanced %>%
+         mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")),
+       aes(x = outcome, y = RSO, fill = outcome)) +
+  geom_boxplot(alpha = 0.75, width = 0.4, outlier.shape = 21) +
+  scale_fill_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(
+    title    = "RSO vs match outcome",
+    subtitle = "Higher remaining specialist bowling overs correlate with bowling team dominance",
+    x        = "Match outcome (batting team)",
+    y        = "RSO score"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        plot.subtitle    = element_text(colour = "grey50", size = 10))
+
+snapshot_df_enhanced %>%
+  filter(!is.na(RSO), !is.na(match_winner)) %>%
+  mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")) %>%
+  ggplot(aes(x = outcome, y = RSO, fill = outcome)) +
+  geom_boxplot(
+    alpha = 0.9,
+    width = 0.5,
+    outlier.shape = 21,
+    outlier.size = 2.5,
+    outlier.stroke = 0.8
+  ) +
+  scale_fill_manual(
+    values = c("Lost" = "#D8744F", "Won" = "#4DAA8A")
+  ) +
+  labs(
+    title    = "RSO vs match outcome",
+    subtitle = "RSO matters most in closely-contested chases",
+    x        = "Match outcome (batting team)",
+    y        = "RSO score"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 22, face = "bold"),
+    plot.subtitle = element_text(size = 16, colour = "grey50"),
+    axis.title = element_text(size = 18),
+    axis.text  = element_text(size = 16)
+  )
+  
+ 
+```
+
+```{r}
+# # ============================================================
+# # SECTION 8: NORMALISE RBD & RSO + PART B MODELLING
+# # ============================================================
+# 
+# 
+# # Normalise RBD and RSO to 0–1 
+snapshot_df_enhanced <- snapshot_df_enhanced %>%
+   mutate(
+     RBD_norm = (RBD - min(RBD, na.rm = TRUE)) /
+                (max(RBD, na.rm = TRUE) - min(RBD, na.rm = TRUE)),
+     RSO_norm = (RSO - min(RSO, na.rm = TRUE)) /
+                (max(RSO, na.rm = TRUE) - min(RSO, na.rm = TRUE))
+   )
+
+# Verify correlations improved
+snapshot_df_enhanced %>%
+   mutate(match_winner = as.numeric(as.character(match_winner))) %>%
+   summarise(
+     cor_RBD = cor(RBD,      match_winner, use = "complete.obs"),
+     cor_RSO = cor(RSO,      match_winner, use = "complete.obs"),
+     cor_RBD_norm = cor(RBD_norm, match_winner, use = "complete.obs"),
+     cor_RSO_norm = cor(RSO_norm, match_winner, use = "complete.obs")
+   ) %>%
+   print()
+   
+
+```
+
+
+
+
+```{r}
+# ============================================================
+# FEATURE ENGINEERING
+# ============================================================
+
+snapshot_df_enhanced <- snapshot_df_enhanced %>%
+  mutate(
+    pressure_ratio = if_else(
+      run_rate > 0 & !is.na(run_rate),
+      required_run_rate / run_rate,
+      required_run_rate
+    ),
+    runs_needed   = target - current_runs,
+    runs_per_ball = runs_needed / balls_remaining,
+    wicket_rate   = wickets_lost / (balls_bowled / 6),
+    rbd_pressure  = RBD_norm * pressure_ratio,
+    venue_lumped  = fct_lump_min(as.factor(venue), min = 20)
+  )
+
+# ============================================================
+# PREPARE MODEL DATA
+# ============================================================
+
+model_data_c <- snapshot_df_enhanced %>%
+  mutate(
+    across(c(batting_team, bowling_team, venue_lumped), as.factor),
+    match_winner = as.factor(match_winner)
+  ) %>%
+  drop_na(match_winner, pressure_ratio, runs_per_ball, wicket_rate)
+
+set.seed(42)
+train_index_c <- createDataPartition(model_data_c$match_winner, p = 0.8, list = FALSE)
+train_data_c  <- model_data_c[train_index_c, ]
+test_data_c   <- model_data_c[-train_index_c, ]
+
+for (col in c("batting_team", "bowling_team", "venue_lumped")) {
+  test_data_c[[col]] <- factor(test_data_c[[col]], levels = levels(train_data_c[[col]]))
+}
+test_data_c <- test_data_c %>%
+  filter(!is.na(batting_team), !is.na(bowling_team), !is.na(venue_lumped))
+
+# ============================================================
+# LOGISTIC REGRESSION — MODEL 
+# ============================================================
+
+log_model_c <- glm(
+  match_winner ~
+    pressure_ratio + runs_per_ball + wicket_rate +
+    RBD_norm + RSO_norm + rbd_pressure +
+    batting_team + bowling_team + venue_lumped,
+  data   = train_data_c,
+  family = binomial
+)
+
+log_probs_c   <- predict(log_model_c, test_data_c, type = "response")
+true_labels_c <- suppressWarnings(as.numeric(as.character(test_data_c$match_winner)))
+roc_c_log     <- roc(response = true_labels_c, predictor = log_probs_c, quiet = TRUE)
+
+
+# ============================================================
+# DECISION TREE — MODEL 
+# ============================================================
+
+tree_model_c_raw <- rpart(
+  match_winner ~
+    pressure_ratio + runs_per_ball + wicket_rate +
+    RBD_norm + RSO_norm + rbd_pressure +
+    batting_team + bowling_team + venue_lumped,
+  data    = train_data_c,
+  method  = "class",
+  control = rpart.control(cp = 0.0001, minsplit = 8, minbucket = 3)
+)
+
+cp_table  <- tree_model_c_raw$cptable
+min_row   <- which.min(cp_table[, "xerror"])
+threshold <- cp_table[min_row, "xerror"] + cp_table[min_row, "xstd"]
+best_cp   <- cp_table[min(which(cp_table[, "xerror"] <= threshold)), "CP"]
+
+tree_model_c  <- prune(tree_model_c_raw, cp = best_cp)
+tree_probs_c  <- predict(tree_model_c, test_data_c, type = "prob")[, "1"]
+roc_c_tree    <- roc(response = true_labels_c, predictor = tree_probs_c, quiet = TRUE)
+
+# ============================================================
+# THRESHOLD TUNING — Logistic Regression (Model C)
+# ============================================================
+
+best_thresh_log <- coords(roc_c_log, "best",
+                          best.method = "youden",
+                          ret = c("threshold", "sensitivity", "specificity", "accuracy"))
+cat("Optimal threshold (Logistic):", round(best_thresh_log$threshold, 4), "\n")
+print(best_thresh_log)
+
+log_pred_c_tuned <- ifelse(log_probs_c > best_thresh_log$threshold, 1, 0)
+cat("\n--- Tuned Logistic Regression Confusion Matrix ---\n")
+confusionMatrix(factor(log_pred_c_tuned), test_data_c$match_winner)
+
+# ============================================================
+# THRESHOLD TUNING — Decision Tree (Model C)
+# ============================================================
+
+best_thresh_tree <- coords(roc_c_tree, "best",
+                           best.method = "youden",
+                           ret = c("threshold", "sensitivity", "specificity", "accuracy"))
+cat("Optimal threshold (Decision Tree):", round(best_thresh_tree$threshold, 4), "\n")
+print(best_thresh_tree)
+
+tree_pred_c_tuned <- ifelse(tree_probs_c > best_thresh_tree$threshold, 1, 0)
+cat("\n--- Tuned Decision Tree Confusion Matrix ---\n")
+confusionMatrix(factor(tree_pred_c_tuned), test_data_c$match_winner)
+
+# ============================================================
+# COMPARISON TABLE
+# ============================================================
+
+comparison_final <- tibble(
+  Model = c(
+    "Part C — Logistic Regression (default 0.5)",
+    "Part C — Logistic Regression (tuned threshold)",
+    "Part C — Decision Tree (default 0.5)",
+    "Part C — Decision Tree (tuned threshold)"
+  ),
+  Accuracy = c(
+    round(confusionMatrix(factor(ifelse(log_probs_c > 0.5, 1, 0)),  test_data_c$match_winner)$overall["Accuracy"], 3),
+    round(confusionMatrix(factor(log_pred_c_tuned),                  test_data_c$match_winner)$overall["Accuracy"], 3),
+    round(confusionMatrix(factor(ifelse(tree_probs_c > 0.5, 1, 0)), test_data_c$match_winner)$overall["Accuracy"], 3),
+    round(confusionMatrix(factor(tree_pred_c_tuned),                 test_data_c$match_winner)$overall["Accuracy"], 3)
+  ),
+  AUC = c(
+    round(auc(roc_c_log),  3),
+    round(auc(roc_c_log),  3),
+    round(auc(roc_c_tree), 3),
+    round(auc(roc_c_tree), 3)
+  )
+)
+
+print(comparison_final)
+```
+
+```{r}
+# ============================================================
+# FIGURE: Overlaid ROC curves — Part A vs Part B (Logistic)
+# ============================================================
+library(ggplot2)
+library(pROC)
+
+# Build data frames for each ROC curve
+roc_a_df <- data.frame(
+  FPR = 1 - roc_curve$specificities,
+  TPR = roc_curve$sensitivities,
+  Model = paste0("Part A LR (AUC = ", round(auc(roc_curve), 3), ")")
+)
+
+roc_c_df <- data.frame(
+  FPR = 1 - roc_c_log$specificities,
+  TPR = roc_c_log$sensitivities,
+  Model = paste0("Part B LR (AUC = ", round(auc(roc_c_log), 3), ")")
+)
+
+roc_tree_a_df <- data.frame(
+  FPR = 1 - roc_tree$specificities,
+  TPR = roc_tree$sensitivities,
+  Model = paste0("Part A DT (AUC = ", round(auc(roc_tree), 3), ")")
+)
+
+roc_tree_c_df <- data.frame(
+  FPR = 1 - roc_c_tree$specificities,
+  TPR = roc_c_tree$sensitivities,
+  Model = paste0("Part B DT (AUC = ", round(auc(roc_c_tree), 3), ")")
+)
+
+roc_all <- bind_rows(roc_a_df, roc_c_df, roc_tree_a_df, roc_tree_c_df)
+
+ggplot(roc_all, aes(x = FPR, y = TPR, colour = Model, linetype = Model)) +
+  geom_line(linewidth = 1.1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              colour = "grey60", linewidth = 0.7) +
+  scale_colour_manual(values = c(
+    "steelblue", "#1D9E75", "#E07B39", "#9B59B6"
+  )) +
+  scale_linetype_manual(values = c("solid", "solid", "dashed", "dashed")) +
+  labs(
+    title = "ROC Curves: Part A vs Part B Models",
+    subtitle = "Logistic regression (solid) and decision tree (dashed)",
+    x = "1 - Specificity (False Positive Rate)",
+    y = "Sensitivity (True Positive Rate)",
+    colour = "Model", linetype = "Model"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = c(0.65, 0.25),
+    legend.background = element_rect(fill = "white", colour = "grey80"),
+    plot.subtitle = element_text(colour = "grey50", size = 10)
+  )
+
+
+# ============================================================
+# FIGURE: Variable importance — Part B Logistic Regression
+# ============================================================
+library(broom)
+
+tidy(log_model_c) %>%
+  filter(term != "(Intercept)", !is.na(estimate)) %>%
+  # Keep only the core engineered features for a clean plot
+  filter(term %in% c("pressure_ratio", "runs_per_ball", "wicket_rate",
+                     "RBD_norm", "RSO_norm", "rbd_pressure")) %>%
+  mutate(
+    term_label = recode(term,
+      pressure_ratio  = "Pressure Ratio (RRR / RR)",
+      runs_per_ball   = "Runs per Ball Required",
+      wicket_rate     = "Wicket Rate",
+      RBD_norm        = "Remaining Batting Depth (RBD)",
+      RSO_norm        = "Remaining Specialist Overs (RSO)",
+      rbd_pressure    = "RBD × Pressure (Interaction)"
+    ),
+    direction = ifelse(estimate > 0, "Positive", "Negative")
+  ) %>%
+  ggplot(aes(x = reorder(term_label, estimate), y = estimate,
+             fill = direction)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_errorbar(aes(ymin = estimate - std.error,
+                    ymax = estimate + std.error),
+                width = 0.2, colour = "grey40") +
+  coord_flip() +
+  scale_fill_manual(values = c("Positive" = "#1D9E75",
+                               "Negative" = "#D85A30")) +
+  labs(
+    title = "Logistic Regression Coefficients — Part B ",
+    subtitle = "Error bars show ±1 standard error | Positive = higher win probability",
+    x = NULL,
+    y = "Coefficient estimate",
+    fill = "Direction"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle = element_text(colour = "grey50", size = 10),
+    legend.position = "top"
+  )
+
+
+# ============================================================
+# TABLE: Formatted model comparison (use knitr::kable in Rmd)
+# ============================================================
+library(knitr)
+
+model_comparison_table <- tibble(
+  Model = c(
+    "Part A — Logistic Regression",
+    "Part A — Decision Tree",
+    "Part B — Logistic Regression (default 0.50)",
+    "Part B — Logistic Regression (tuned 0.41)",
+    "Part B — Decision Tree (default 0.50)",
+    "Part B — Decision Tree (tuned 0.72)"
+  ),
+  Accuracy = c("84.6%", "76.9%", "84.1%", "87.6%", "83.2%", "89.4%"),
+  AUC      = c("0.884", "0.834", "0.913", "0.913", "0.910", "0.910"),
+  Sensitivity = c("82.4%", "70.6%", "—", "93.1%", "—", "91.4%"),
+  Specificity = c("86.8%", "83.0%", "—", "81.8%", "—", "87.3%"),
+  Kappa    = c("0.692", "0.537", "—", "0.751", "—", "0.787")
+)
+
+kable(model_comparison_table,
+      caption = "Table 1: Model performance comparison across Part A and Part B",
+      align = c("l", "c", "c", "c", "c", "c"))
+
+
+# ============================================================
+# TABLE: Player role summary statistics
+# ============================================================
+role_summary <- player_stats %>%
+  filter(role != "Other") %>%
+  group_by(Role = role) %>%
+  summarise(
+    `N players`        = n(),
+    `Batted (n)`       = sum(balls_faced > 0),
+    `Mean SR`          = round(mean(strike_rate, na.rm = TRUE), 1),
+    `Median SR`        = round(median(strike_rate, na.rm = TRUE), 1),
+    `Mean W_batter`    = round(mean(W_batter, na.rm = TRUE), 3),
+    `Bowled (n)`       = sum(balls_bowled > 0),
+    `Mean economy`     = round(mean(economy_rate, na.rm = TRUE), 2),
+    `Mean W_bowler`    = round(mean(W_bowler, na.rm = TRUE), 3),
+    .groups = "drop"
+  )
+
+kable(role_summary,
+      caption = "Table 2: Summary statistics of player weightage scores by role",
+      align = c("l", rep("c", 8)))
+
+
+# ============================================================
+# FIGURE: Scatter plot — RBD vs required_run_rate, coloured by outcome
+# (shows how RBD and pressure interact)
+# ============================================================
+snapshot_df_enhanced %>%
+  mutate(Outcome = ifelse(match_winner == 1, "Won", "Lost")) %>%
+  filter(!is.na(Outcome)) %>%
+  ggplot(aes(x = required_run_rate, y = RBD, colour = Outcome)) +
+  geom_point(alpha = 0.55, size = 1.8) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 1.2) +
+  scale_colour_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(
+    title = "Remaining Batting Depth vs Required Run Rate at 13 Overs",
+    subtitle = "Points coloured by match outcome | LOESS smoother per group",
+    x = "Required run rate (runs per over)",
+    y = "RBD score",
+    colour = "Outcome"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle = element_text(colour = "grey50", size = 10),
+    legend.position = "top"
+  )
+```
+
+
+```{r}
+# ============================================================
+# TABLE: Dataset overview — matches, deliveries, seasons
+# ============================================================
+library(knitr)
+library(dplyr)
+library(tidyr)
+
+dataset_summary <- balls %>%
+  summarise(
+    `Total matches`      = as.character(n_distinct(match_id)),
+    `Total deliveries`   = as.character(n()),
+    `Seasons covered`    = paste(
+                             format(min(as.Date(date)), "%Y"),
+                             "-",
+                             format(max(as.Date(date)), "%Y")
+                           ),
+    `Teams`              = as.character(n_distinct(team)),
+    `Unique venues`      = as.character(n_distinct(venue)),
+    `Total players`      = as.character(n_distinct(batter))
+  )
+
+snapshot_summary <- snapshot_df %>%
+  summarise(
+    `Matches with 2nd innings snapshot` = as.character(n()),
+    `Batting team wins`                 = as.character(sum(match_winner == 1, na.rm = TRUE)),
+    `Batting team losses`               = as.character(sum(match_winner == 0, na.rm = TRUE)),
+    `Win rate (batting team)`           = paste0(
+                                            round(mean(match_winner == 1,
+                                                       na.rm = TRUE) * 100, 1), "%"
+                                          )
+  )
+
+bind_rows(
+  dataset_summary %>% pivot_longer(everything(),
+                        names_to = "Attribute", values_to = "Value"),
+  snapshot_summary %>% pivot_longer(everything(),
+                         names_to = "Attribute", values_to = "Value")
+) %>%
+  kable(
+    caption = "Table 3: Dataset summary -- BBL ball-by-ball data and 13-over snapshot",
+    col.names = c("Attribute", "Value"),
+    align = c("l", "c")
+  )
+
+
+# ============================================================
+# FIGURE: Visual confusion matrix -- best model (tuned DT, Part B)
+# ============================================================
+library(ggplot2)
+
+cm_data <- data.frame(
+  Predicted = factor(c("Win", "Win", "Loss", "Loss"),
+                     levels = c("Win", "Loss")),
+  Actual    = factor(c("Win", "Loss", "Win", "Loss"),
+                     levels = c("Win", "Loss")),
+  Count     = c(53, 5, 7, 48),
+  Label     = c("TP\n53", "FP\n5", "FN\n7", "TN\n48"),
+  Fill      = c("True Positive", "Error", "Error", "True Negative")
+)
+
+ggplot(cm_data, aes(x = Actual, y = Predicted, fill = Fill)) +
+  geom_tile(colour = "white", linewidth = 1.5) +
+  geom_text(aes(label = Label), size = 7, fontface = "bold", colour = "white") +
+  scale_fill_manual(values = c(
+    "True Positive"  = "#1D9E75",
+    "True Negative"  = "#378ADD",
+    "Error"          = "#D85A30"
+  )) +
+  scale_x_discrete(position = "top") +
+  labs(
+    title    = "Confusion Matrix -- Part B Decision Tree ",
+    subtitle = "Accuracy = 89.4% | Kappa = 0.787 | Sensitivity = 91.4% | Specificity = 87.3%",
+    x        = "Actual outcome",
+    y        = "Predicted outcome"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position  = "none",
+    axis.text        = element_text(size = 13, face = "bold"),
+    plot.subtitle    = element_text(colour = "grey50", size = 10),
+    panel.grid       = element_blank()
+  )
+```
+
+
+
+
+```{r all-figures-tables, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+# ============================================================
+# LOAD LIBRARIES
+# ============================================================
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggridges)
+library(forcats)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+library(broom)
+library(knitr)
+
+# ============================================================
+# DATA LOADING & HELPER FUNCTIONS
+# ============================================================
+data_root <- "bbl_json"
+files <- list.files(data_root, pattern = "*.json", full.names = TRUE)
+
+clean_venues <- function(venue) {
+  case_when(
+    venue == "Aurora Stadium" ~ "Aurora Stadium, Launceston",
+    venue == "Brisbane Cricket Ground" ~ "Brisbane Cricket Ground, Woolloongabba, Brisbane",
+    venue == "Brisbane Cricket Ground, Woolloongabba" ~ "Brisbane Cricket Ground, Woolloongabba, Brisbane",
+    venue == "Bellerive Oval" ~ "Bellerive Oval, Hobart",
+    venue == "Docklands Stadium" ~ "Docklands Stadium, Melbourne",
+    venue == "Geelong Cricket Ground" ~ "GMHBA Stadium, South Geelong, Victoria",
+    venue == "Simonds Stadium, South Geelong, Victoria" ~ "GMHBA Stadium, South Geelong, Victoria",
+    venue == "International Sports Stadium" ~ "International Sports Stadium, Coffs Harbour",
+    venue == "Manuka Oval" ~ "Manuka Oval, Canberra",
+    venue == "W.A.C.A. Ground" ~ "Western Australia Cricket Association Ground",
+    venue == "Sydney Cricket Ground" ~ "Sydney Cricket Ground, Sydney",
+    TRUE ~ venue
+  )
+}
+
+get_home_team <- function(info) {
+  venue <- info$venue
+  teams <- info$teams
+  if (venue == "Adelaide Oval" && "Adelaide Strikers" %in% teams) "Adelaide Strikers"
+  else if (venue == "Aurora Stadium, Launceston" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else if (venue == "Bellerive Oval, Hobart" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else if (venue == "Brisbane Cricket Ground, Woolloongabba, Brisbane" && "Brisbane Heat" %in% teams) "Brisbane Heat"
+  else if (venue == "Docklands Stadium, Melbourne" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Carrara Oval" && "Brisbane Heat" %in% teams) "Brisbane Heat"
+  else if (venue == "GMHBA Stadium, South Geelong, Victoria" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Melbourne Cricket Ground" && "Melbourne Stars" %in% teams) "Melbourne Stars"
+  else if (venue == "Melbourne Cricket Ground" && "Melbourne Renegades" %in% teams) "Melbourne Renegades"
+  else if (venue == "Perth Stadium" && "Perth Scorchers" %in% teams) "Perth Scorchers"
+  else if (venue == "Stadium Australia" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Stadium Australia" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Cricket Ground, Sydney" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Sydney Cricket Ground, Sydney" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Showground Stadium" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Sydney Showground Stadium" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Manuka Oval, Canberra" && "Sydney Thunder" %in% teams) "Sydney Thunder"
+  else if (venue == "Manuka Oval, Canberra" && "Sydney Sixers" %in% teams) "Sydney Sixers"
+  else if (venue == "Western Australia Cricket Association Ground" && "Perth Scorchers" %in% teams) "Perth Scorchers"
+  else if (venue == "University of Tasmania Stadium, Launceston" && "Hobart Hurricanes" %in% teams) "Hobart Hurricanes"
+  else NA_character_
+}
+
+# ============================================================
+# BUILD BALLS DATA FRAME
+# ============================================================
+playing_xi <- map_dfr(files, function(file) {
+  tryCatch({
+    json <- fromJSON(readLines(file, warn = FALSE))
+    info <- json$info
+    match_id <- as.character(str_remove(basename(file), ".json"))
+    teams <- info$teams
+    players_list <- info$players
+    map_dfr(teams, function(team_name) {
+      tibble(match_id = match_id, team = team_name, player = players_list[[team_name]])
+    })
+  }, error = function(e) tibble())
+})
+
+balls <- map_dfr(files, function(file) {
+  tryCatch({
+    json <- fromJSON(readLines(file, warn = FALSE))
+    info <- json$info
+    info$venue <- clean_venues(info$venue)
+    target_runs <- tryCatch({ json$innings$target$runs[[2]] %||% NA_integer_ }, error = function(e) NA_integer_)
+    row_meta <- tibble(
+      match_id         = as.character(str_remove(basename(file), ".json")),
+      date             = as.character(info$dates[[1]]),
+      team1            = as.character(info$teams[[1]]),
+      team2            = as.character(info$teams[[2]]),
+      home_team        = as.character(get_home_team(info)),
+      winner           = as.character(info$outcome$winner %||% NA_character_),
+      result           = as.character(info$outcome$result %||% NA_character_),
+      winner_by_runs   = as.integer(info$outcome$by$runs %||% NA_integer_),
+      winner_by_wickets= as.integer(info$outcome$by$wickets %||% NA_integer_),
+      venue            = as.character(info$venue),
+      target           = target_runs
+    )
+    map_dfr(1:nrow(json$innings), function(i) {
+      team    <- as.character(json$innings[i, "team"][[1]])
+      overs_df <- json$innings[i, "overs"][[1]]
+      map_dfr(1:nrow(overs_df), function(o) {
+        deliveries <- overs_df$deliveries[[o]]
+        over_num   <- as.integer(overs_df$over[o])
+        deliveries_flat <- deliveries %>%
+          mutate(
+            innings        = as.integer(i),
+            team           = as.character(team),
+            over           = over_num,
+            ball_in_over   = row_number(),
+            delivery       = as.numeric(sprintf("%d.%d", over_num, ball_in_over)),
+            batter         = as.character(batter %||% NA_character_),
+            bowler         = as.character(bowler %||% NA_character_),
+            non_striker    = as.character(non_striker %||% NA_character_),
+            runs_batter    = as.integer(runs$batter %||% 0),
+            runs_extras    = as.integer(runs$extras %||% 0),
+            runs_total     = as.integer(runs$total %||% 0),
+            powerplay      = as.logical(over_num < 6),
+            powerplay_type = as.character(if (over_num < 6) "Mandatory" else NA_character_)
+          )
+        wicket_info <- map_dfr(seq_len(nrow(deliveries)), function(b) {
+          wkts <- deliveries$wickets[[b]]
+          tibble(
+            wicket             = !is.null(wkts),
+            wicket_type        = if (!is.null(wkts)) wkts$kind[1] else NA_character_,
+            wicket_player_out  = if (!is.null(wkts)) wkts$player_out[1] else NA_character_
+          )
+        })
+        bind_cols(deliveries_flat, wicket_info)
+      })
+    }) %>% bind_cols(row_meta[rep(1, nrow(.)), ])
+  }, error = function(e) tibble())
+})
+
+balls <- balls %>% arrange(date, match_id, innings, delivery)
+
+# ============================================================
+# SCORECARDS
+# ============================================================
+batting_scorecard <- balls %>%
+  group_by(match_id, batter) %>%
+  summarise(
+    balls_faced = n(),
+    runs        = sum(runs_batter, na.rm = TRUE),
+    fours       = sum(runs_batter == 4, na.rm = TRUE),
+    sixes       = sum(runs_batter == 6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(match_id, desc(runs))
+
+bowling_scorecard <- balls %>%
+  group_by(match_id, bowler) %>%
+  summarise(
+    balls_bowled  = n(),
+    overs         = balls_bowled %/% 6 + (balls_bowled %% 6) / 10,
+    dot_balls     = sum(runs_total == 0, na.rm = TRUE),
+    wickets       = sum(wicket & !is.na(wicket_player_out), na.rm = TRUE),
+    runs_conceded = sum(runs_total, na.rm = TRUE),
+    runs_extras   = sum(runs_extras, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(match_id, desc(wickets))
+
+# ============================================================
+# SNAPSHOT AT 13-OVER MARK
+# ============================================================
+snapshot_df <- balls %>%
+  filter(innings == 2) %>%
+  group_by(match_id) %>%
+  mutate(
+    balls_bowled      = row_number(),
+    overs_completed   = floor(balls_bowled / 6) + (balls_bowled %% 6) / 10,
+    current_runs      = cumsum(runs_total),
+    wickets_lost      = cumsum(wicket),
+    balls_remaining   = 120 - balls_bowled,
+    run_rate          = current_runs / overs_completed,
+    required_run_rate = if_else(innings == 2 & !is.na(target),
+                                (target - current_runs) / (balls_remaining / 6),
+                                NA_real_),
+    batting_team      = team,
+    bowling_team      = if_else(team == team1, team2, team1),
+    target            = target
+  ) %>%
+  filter(overs_completed >= 13) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  mutate(
+    remaining_wickets = 10 - wickets_lost,
+    match_winner      = if_else(batting_team == winner, 1, 0)
+  ) %>%
+  select(match_id, date, venue, batting_team, bowling_team, target,
+         current_runs, wickets_lost, remaining_wickets, balls_bowled,
+         balls_remaining, overs_completed, run_rate, required_run_rate,
+         powerplay, home_team, winner, match_winner)
+
+# ============================================================
+# PART A MODELS
+# ============================================================
+model_data <- snapshot_df %>%
+  mutate(across(c(batting_team, bowling_team, venue, home_team), as.factor),
+         match_winner = as.factor(match_winner)) %>%
+  drop_na(match_winner)
+
+set.seed(42)
+train_index <- createDataPartition(model_data$match_winner, p = 0.8, list = FALSE)
+train_data  <- model_data[train_index, ]
+test_data   <- model_data[-train_index, ]
+
+for (col in c("batting_team", "bowling_team", "venue", "home_team")) {
+  test_data[[col]] <- factor(test_data[[col]], levels = levels(train_data[[col]]))
+}
+test_data <- test_data %>%
+  filter(!is.na(batting_team), !is.na(bowling_team), !is.na(venue), !is.na(home_team))
+
+log_model <- glm(match_winner ~ current_runs + wickets_lost + remaining_wickets +
+                   balls_remaining + overs_completed + run_rate + required_run_rate +
+                   powerplay + batting_team + bowling_team + venue + home_team,
+                 data = train_data, family = binomial)
+
+log_probs <- predict(log_model, test_data, type = "response")
+roc_curve <- roc(test_data$match_winner, log_probs, quiet = TRUE)
+auc_value <- auc(roc_curve)
+
+tree_model <- rpart(match_winner ~ current_runs + wickets_lost + remaining_wickets +
+                      balls_remaining + overs_completed + run_rate + required_run_rate +
+                      powerplay + batting_team + bowling_team + venue + home_team,
+                    data = train_data, method = "class", control = rpart.control(cp = 0.01))
+
+tree_probs    <- predict(tree_model, test_data, type = "prob")[, "1"]
+true_labels   <- suppressWarnings(as.numeric(as.character(test_data$match_winner)))
+roc_tree      <- roc(response = true_labels, predictor = tree_probs, quiet = TRUE)
+
+# ============================================================
+# PLAYER ROLES & WEIGHTS
+# ============================================================
+bowling_summary <- bowling_scorecard %>%
+  rename(wickets_taken = wickets) %>%
+  select(match_id, bowler, balls_bowled, overs, wickets_taken, runs_conceded) %>%
+  group_by(bowler) %>%
+  summarise(
+    balls_bowled  = sum(balls_bowled, na.rm = TRUE),
+    wickets       = sum(wickets_taken, na.rm = TRUE),
+    runs_conceded = sum(runs_conceded, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rename(player = bowler)
+
+batting_summary <- batting_scorecard %>%
+  group_by(batter) %>%
+  summarise(
+    balls_faced = sum(balls_faced, na.rm = TRUE),
+    runs        = sum(runs, na.rm = TRUE),
+    fours       = sum(fours, na.rm = TRUE),
+    sixes       = sum(sixes, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rename(player = batter)
+
+player_stats <- full_join(batting_summary, bowling_summary, by = "player") %>%
+  replace_na(list(balls_faced = 0, runs = 0, fours = 0, sixes = 0,
+                  balls_bowled = 0, wickets = 0, runs_conceded = 0)) %>%
+  mutate(
+    overs_bowled = balls_bowled / 6,
+    role = case_when(
+      balls_faced >= 20 & balls_bowled >= 12 ~ "Allrounder",
+      balls_bowled >= 18 & !(balls_faced >= 20 & balls_bowled >= 12) ~ "Bowler",
+      balls_faced >= 20 & !(balls_faced >= 20 & balls_bowled >= 12) ~ "Batter",
+      TRUE ~ "Other"
+    )
+  )
+
+# Batting position weight
+batting_position <- balls %>%
+  filter(innings %in% c(1, 2)) %>%
+  group_by(match_id, innings, batter) %>%
+  summarise(first_ball = min(delivery), .groups = "drop") %>%
+  group_by(match_id, innings) %>%
+  mutate(batting_position = rank(first_ball, ties.method = "first")) %>%
+  ungroup() %>%
+  group_by(batter) %>%
+  summarise(
+    avg_batting_position = round(mean(batting_position, na.rm = TRUE), 2),
+    matches_batted       = n(),
+    .groups = "drop"
+  ) %>%
+  rename(player = batter) %>%
+  mutate(
+    position_weight = (11 - avg_batting_position) / 10,
+    position_weight = pmax(pmin(position_weight, 1), 0)
+  )
+
+player_stats <- player_stats %>%
+  left_join(batting_position %>% select(player, avg_batting_position, position_weight), by = "player") %>%
+  mutate(
+    position_weight = replace_na(position_weight, 0),
+    strike_rate     = ifelse(balls_faced > 0, (runs / balls_faced) * 100, NA_real_),
+    sr_position_raw = case_when(balls_faced > 0 ~ strike_rate * position_weight, TRUE ~ 0),
+    W_batter = case_when(
+      balls_faced > 0 ~
+        (sr_position_raw - min(sr_position_raw[balls_faced > 0], na.rm = TRUE)) /
+        (max(sr_position_raw[balls_faced > 0], na.rm = TRUE) -
+           min(sr_position_raw[balls_faced > 0], na.rm = TRUE)),
+      balls_faced == 0 ~ 0
+    )
+  )
+
+# Bowler weights
+player_stats <- player_stats %>%
+  mutate(
+    economy_rate = ifelse(balls_bowled > 0, (runs_conceded / balls_bowled) * 6, NA_real_),
+    bowling_sr   = ifelse(wickets > 0, balls_bowled / wickets, NA_real_)
+  ) %>%
+  mutate(
+    economy_score   = ifelse(balls_bowled > 0, max(economy_rate, na.rm = TRUE) - economy_rate, 0),
+    bowling_sr_score= ifelse(!is.na(bowling_sr), max(bowling_sr, na.rm = TRUE) - bowling_sr, 0)
+  ) %>%
+  mutate(
+    econ_norm = ifelse(balls_bowled > 0,
+                       (economy_score - min(economy_score[balls_bowled > 0], na.rm = TRUE)) /
+                         (max(economy_score[balls_bowled > 0], na.rm = TRUE) -
+                            min(economy_score[balls_bowled > 0], na.rm = TRUE)), 0),
+    sr_norm   = ifelse(!is.na(bowling_sr),
+                       (bowling_sr_score - min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)) /
+                         (max(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE) -
+                            min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)), 0),
+    W_bowler  = 0.5 * econ_norm + 0.5 * sr_norm
+  )
+
+batter_weights <- player_stats %>%
+  filter(role != "Other") %>%
+  select(player, role, balls_faced, runs, strike_rate, W_batter) %>%
+  arrange(desc(W_batter))
+
+bowler_weights <- player_stats %>%
+  filter(role != "Other") %>%
+  select(player, role, balls_bowled, wickets, runs_conceded,
+         economy_rate, bowling_sr, economy_score, bowling_sr_score,
+         econ_norm, sr_norm, W_bowler) %>%
+  arrange(desc(W_bowler))
+
+# ============================================================
+# RBD AND RSO
+# ============================================================
+playing_xi_weights <- playing_xi %>%
+  left_join(batter_weights %>% select(player, W_batter, strike_rate), by = "player") %>%
+  left_join(bowler_weights %>% select(player, W_bowler, economy_rate, bowling_sr), by = "player") %>%
+  mutate(W_batter = replace_na(W_batter, 0), W_bowler = replace_na(W_bowler, 0))
+
+dismissed_by_13 <- balls %>%
+  filter(innings == 2, wicket == TRUE, !is.na(wicket_player_out)) %>%
+  group_by(match_id) %>%
+  filter(over < 13) %>%
+  select(match_id, wicket_player_out) %>%
+  rename(player = wicket_player_out) %>%
+  ungroup()
+
+balls_bowled_by_13 <- balls %>%
+  filter(innings == 2) %>%
+  group_by(match_id) %>%
+  filter(over < 13) %>%
+  group_by(match_id, bowler) %>%
+  summarise(
+    balls_used = sum((is.na(extras$wides) | extras$wides == 0) &
+                       (is.na(extras$noballs) | extras$noballs == 0)),
+    .groups = "drop"
+  ) %>%
+  mutate(overs_used = balls_used / 6) %>%
+  filter(balls_used > 0)
+
+rbd_df <- snapshot_df %>%
+  select(match_id, batting_team) %>%
+  left_join(playing_xi_weights %>% select(match_id, team, player, W_batter),
+            by = c("match_id", "batting_team" = "team")) %>%
+  anti_join(dismissed_by_13, by = c("match_id", "player")) %>%
+  group_by(match_id) %>%
+  summarise(RBD = sum(W_batter, na.rm = TRUE), .groups = "drop")
+
+rso_df <- snapshot_df %>%
+  select(match_id, bowling_team) %>%
+  left_join(
+    playing_xi_weights %>%
+      select(match_id, team, player, W_bowler) %>%
+      left_join(player_stats %>% select(player, role), by = "player") %>%
+      filter(role %in% c("Bowler", "Allrounder"), W_bowler > 0.3),
+    by = c("match_id", "bowling_team" = "team")
+  ) %>%
+  left_join(balls_bowled_by_13 %>% rename(player = bowler), by = c("match_id", "player")) %>%
+  mutate(
+    overs_used      = replace_na(overs_used, 0),
+    overs_remaining = pmax(4 - overs_used, 0)
+  ) %>%
+  group_by(match_id) %>%
+  arrange(match_id, desc(W_bowler)) %>%
+  mutate(
+    cum_overs_before = lag(cumsum(overs_remaining), default = 0),
+    overs_allocated  = pmin(overs_remaining, 7 - cum_overs_before),
+    overs_allocated  = pmax(overs_allocated, 0)
+  ) %>%
+  filter(overs_allocated > 0) %>%
+  mutate(weighted_overs = overs_allocated * W_bowler) %>%
+  summarise(RSO = sum(weighted_overs, na.rm = TRUE), .groups = "drop")
+
+snapshot_df_enhanced <- snapshot_df %>%
+  left_join(rbd_df, by = "match_id") %>%
+  left_join(rso_df, by = "match_id") %>%
+  mutate(
+    RBD          = replace_na(RBD, 0),
+    RSO          = replace_na(RSO, 0),
+    venue_lumped = fct_lump_min(as.factor(venue), min = 20),
+    RBD_norm     = (RBD - min(RBD, na.rm = TRUE)) / (max(RBD, na.rm = TRUE) - min(RBD, na.rm = TRUE)),
+    RSO_norm     = (RSO - min(RSO, na.rm = TRUE)) / (max(RSO, na.rm = TRUE) - min(RSO, na.rm = TRUE)),
+    pressure_ratio = if_else(run_rate > 0 & !is.na(run_rate),
+                             required_run_rate / run_rate, required_run_rate),
+    runs_needed    = target - current_runs,
+    runs_per_ball  = runs_needed / balls_remaining,
+    wicket_rate    = wickets_lost / (balls_bowled / 6),
+    rbd_pressure   = RBD_norm * pressure_ratio
+  )
+
+# ============================================================
+# PART B MODELS
+# ============================================================
+model_data_c <- snapshot_df_enhanced %>%
+  mutate(across(c(batting_team, bowling_team, venue_lumped), as.factor),
+         match_winner = as.factor(match_winner)) %>%
+  drop_na(match_winner, pressure_ratio, runs_per_ball, wicket_rate)
+
+set.seed(42)
+train_index_c <- createDataPartition(model_data_c$match_winner, p = 0.8, list = FALSE)
+train_data_c  <- model_data_c[train_index_c, ]
+test_data_c   <- model_data_c[-train_index_c, ]
+
+for (col in c("batting_team", "bowling_team", "venue_lumped")) {
+  test_data_c[[col]] <- factor(test_data_c[[col]], levels = levels(train_data_c[[col]]))
+}
+test_data_c <- test_data_c %>%
+  filter(!is.na(batting_team), !is.na(bowling_team), !is.na(venue_lumped))
+
+log_model_c <- glm(
+  match_winner ~ pressure_ratio + runs_per_ball + wicket_rate +
+    RBD_norm + RSO_norm + rbd_pressure + batting_team + bowling_team + venue_lumped,
+  data = train_data_c, family = binomial
+)
+log_probs_c   <- predict(log_model_c, test_data_c, type = "response")
+true_labels_c <- suppressWarnings(as.numeric(as.character(test_data_c$match_winner)))
+roc_c_log     <- roc(response = true_labels_c, predictor = log_probs_c, quiet = TRUE)
+
+tree_model_c_raw <- rpart(
+  match_winner ~ pressure_ratio + runs_per_ball + wicket_rate +
+    RBD_norm + RSO_norm + rbd_pressure + batting_team + bowling_team + venue_lumped,
+  data = train_data_c, method = "class",
+  control = rpart.control(cp = 0.0001, minsplit = 8, minbucket = 3)
+)
+cp_table  <- tree_model_c_raw$cptable
+min_row   <- which.min(cp_table[, "xerror"])
+threshold <- cp_table[min_row, "xerror"] + cp_table[min_row, "xstd"]
+best_cp   <- cp_table[min(which(cp_table[, "xerror"] <= threshold)), "CP"]
+tree_model_c <- prune(tree_model_c_raw, cp = best_cp)
+tree_probs_c <- predict(tree_model_c, test_data_c, type = "prob")[, "1"]
+roc_c_tree   <- roc(response = true_labels_c, predictor = tree_probs_c, quiet = TRUE)
+
+best_thresh_log  <- coords(roc_c_log,  "best", best.method = "youden",
+                           ret = c("threshold", "sensitivity", "specificity", "accuracy"))
+best_thresh_tree <- coords(roc_c_tree, "best", best.method = "youden",
+                           ret = c("threshold", "sensitivity", "specificity", "accuracy"))
+
+log_pred_c_tuned  <- ifelse(log_probs_c  > best_thresh_log$threshold,  1, 0)
+tree_pred_c_tuned <- ifelse(tree_probs_c > best_thresh_tree$threshold, 1, 0)
+
+
+# ============================================================
+# ---- FIGURE 1: ROC Curve – Part A Logistic Regression ----
+# ============================================================
+plot(roc_curve, col = "#1f78b4", lwd = 3,
+     main = "ROC Curve – Logistic Regression",
+     cex.main = 1.3, cex.lab = 1.2, cex.axis = 1.1, legacy.axes = TRUE)
+abline(a = 0, b = 1, lty = 2, col = "gray60", lwd = 2)
+grid(col = "gray90", lwd = 1, lty = 1)
+legend("bottomright", legend = paste("AUC =", round(auc_value, 3)),
+       bty = "n", text.col = "#1f78b4", cex = 1.2)
+
+
+# ============================================================
+# ---- FIGURE 2: Variable Importance – Part A Logistic Regression ----
+# ============================================================
+tidy(log_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_estimate = abs(estimate)) %>%
+  ggplot(aes(x = reorder(term, abs_estimate), y = abs_estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Variable Importance (Logistic Regression)",
+       x = "Predictor", y = "Absolute Coefficient") %>%
+  print()
+
+
+# ============================================================
+# ---- FIGURE 3: Decision Tree – Part A ----
+# ============================================================
+rpart.plot(tree_model, type = 2, extra = 104, fallen.leaves = TRUE)
+
+
+# ============================================================
+# ---- FIGURE 4: Number of Players by Role ----
+# ============================================================
+role_counts <- player_stats %>% count(role) %>% arrange(desc(n))
+ggplot(role_counts, aes(x = reorder(role, n), y = n, fill = role)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Number of Players by Role (based on thresholds)",
+       x = "Role", y = "Players") +
+  theme_minimal(base_size = 12)
+
+
+# ============================================================
+# ---- FIGURE 5: Balls Faced by Role – Ridgeline ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other", balls_faced > 0),
+       aes(x = balls_faced, y = role, fill = role)) +
+  geom_density_ridges(alpha = 0.85, scale = 1.2, rel_min_height = 0.01,
+                      quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_manual(values = c("Batter" = "#1D9E75", "Bowler" = "#378ADD", "Allrounder" = "#EF9F27")) +
+  scale_x_continuous(labels = scales::comma, limits = c(0, 2500), breaks = seq(0, 1500, 250)) +
+  labs(title = "Distribution of balls faced by player role",
+       subtitle = "Median line shown | x-axis capped at 2,500 balls to improve readability",
+       x = "Balls faced (career total)", y = "Player role") +
+  theme_ridges(font_size = 13) +
+  theme(legend.position = "none",
+        plot.title    = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+        axis.title.x  = element_text(size = 12, hjust = 0.5),
+        axis.title.y  = element_text(size = 12, hjust = 0.5),
+        panel.grid.minor = element_blank())
+
+
+# ============================================================
+# ---- FIGURE 6: Balls Bowled by Role – Ridgeline ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other", balls_bowled > 0),
+       aes(x = balls_bowled, y = role, fill = role)) +
+  geom_density_ridges(alpha = 0.75, scale = 0.9, rel_min_height = 0.01,
+                      quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_manual(values = c("Batter" = "#1D9E75", "Bowler" = "#378ADD", "Allrounder" = "#EF9F27")) +
+  scale_x_continuous(labels = scales::comma, limits = c(0, 1500), breaks = seq(0, 1500, 250)) +
+  scale_y_discrete(expand = expansion(add = c(0.5, 1.2))) +
+  labs(title = "Distribution of balls bowled by player role",
+       subtitle = "Median line shown | x-axis capped at 1,500 balls to improve readability",
+       x = "Balls bowled (career total)", y = "Player role") +
+  theme_ridges(font_size = 13) +
+  theme(legend.position = "none",
+        plot.title    = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+        axis.title.x  = element_text(size = 12, hjust = 0.5),
+        axis.title.y  = element_text(size = 12, hjust = 0.5),
+        panel.grid.minor = element_blank())
+
+
+# ============================================================
+# ---- FIGURE 7: W_batter Distribution by Role ----
+# ============================================================
+ggplot(batter_weights %>% filter(role != "Other"), aes(x = W_batter, fill = role)) +
+  geom_histogram(bins = 25, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = c("Batter" = "#1D9E75", "Allrounder" = "#EF9F27", "Bowler" = "#378ADD")) +
+  labs(title = "Batter weightage distribution (W_batter) by role",
+       subtitle = "Batters/Allrounders normalised by SR | Bowlers: 0 if never batted, SR-based if they have",
+       x = "Batter weight (0 = no batting contribution, 1 = highest SR)",
+       y = "Number of players", fill = "Role") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10),
+        strip.text = element_text(face = "bold"), legend.position = "none")
+
+
+# ============================================================
+# ---- FIGURE 8: W_bowler Distribution by Role ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other"), aes(x = W_bowler, fill = role)) +
+  geom_histogram(bins = 25, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = c("Bowler" = "#378ADD", "Allrounder" = "#EF9F27", "Batter" = "#1D9E75")) +
+  labs(title = "Bowler weightage distribution (W_bowler) by role",
+       subtitle = "Economy (50%) + bowling SR (50%) | 0 = never bowled, 1 = strongest bowler",
+       x = "Bowler weight (0 = no bowling contribution, 1 = strongest)",
+       y = "Number of players", fill = "Role") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10),
+        strip.text = element_text(face = "bold"), legend.position = "none")
+
+
+# ============================================================
+# ---- FIGURE 9: Economy Rate Distribution by Role – Ridgeline ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other", balls_bowled > 0),
+       aes(x = economy_rate, y = role, fill = role)) +
+  geom_density_ridges(alpha = 0.85, scale = 0.9, rel_min_height = 0.01,
+                      quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_manual(values = c("Bowler" = "#378ADD", "Allrounder" = "#EF9F27", "Batter" = "#1D9E75")) +
+  scale_x_continuous(limits = c(0, 20), breaks = seq(0, 20, 2)) +
+  labs(title = "Economy rate distribution by player role",
+       subtitle = "Median line shown | lower economy = better bowler",
+       x = "Economy rate (runs per over)", y = "Player role") +
+  theme_ridges(font_size = 13) +
+  theme(legend.position = "none",
+        plot.title    = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+        axis.title.x  = element_text(size = 12, hjust = 0.5),
+        axis.title.y  = element_text(size = 12, hjust = 0.5),
+        panel.grid.minor = element_blank())
+
+
+# ============================================================
+# ---- FIGURE 10: Bowling Strike Rate Distribution by Role – Ridgeline ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other", !is.na(bowling_sr)),
+       aes(x = bowling_sr, y = role, fill = role)) +
+  geom_density_ridges(alpha = 0.75, scale = 0.7, rel_min_height = 0.01,
+                      quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_manual(values = c("Bowler" = "#378ADD", "Allrounder" = "#EF9F27", "Batter" = "#1D9E75")) +
+  scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, 10)) +
+  scale_y_discrete(expand = expansion(add = c(0.5, 1.5))) +
+  labs(title = "Bowling strike rate distribution by player role",
+       subtitle = "Median line shown | lower SR = takes wickets faster = better bowler",
+       x = "Bowling strike rate (balls per wicket)", y = "Player role") +
+  theme_ridges(font_size = 13) +
+  theme(legend.position = "none",
+        plot.title    = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 10, colour = "grey50", margin = margin(b = 10)),
+        axis.title.x  = element_text(size = 12, hjust = 0.5),
+        axis.title.y  = element_text(size = 12, hjust = 0.5),
+        panel.grid.minor = element_blank())
+
+
+# ============================================================
+# ---- FIGURE 11: RBD Histogram ----
+# ============================================================
+ggplot(snapshot_df_enhanced, aes(x = RBD)) +
+  geom_histogram(bins = 30, fill = "#1D9E75", colour = "white", linewidth = 0.3, alpha = 0.85) +
+  geom_vline(aes(xintercept = mean(RBD, na.rm = TRUE)),
+             colour = "#0F6E56", linetype = "dashed", linewidth = 0.8) +
+  labs(title = "Remaining Batting Depth (RBD) at 13-over mark",
+       subtitle = "Weighted sum of normalised strike rates for batters yet to bat",
+       x = "RBD score", y = "Number of matches") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10))
+
+
+# ============================================================
+# ---- FIGURE 12: RSO Histogram ----
+# ============================================================
+ggplot(snapshot_df_enhanced, aes(x = RSO)) +
+  geom_histogram(bins = 30, fill = "#378ADD", colour = "white", linewidth = 0.3, alpha = 0.85) +
+  geom_vline(aes(xintercept = mean(RSO, na.rm = TRUE)),
+             colour = "#185FA5", linetype = "dashed", linewidth = 0.8) +
+  labs(title = "Remaining Specialist Overs (RSO) at 13-over mark",
+       subtitle = "Weighted sum of bowler quality × overs remaining for bowling team",
+       x = "RSO score", y = "Number of matches") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10))
+
+
+# ============================================================
+# ---- FIGURE 13: RBD vs Match Outcome Boxplot ----
+# ============================================================
+ggplot(snapshot_df_enhanced %>% mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")),
+       aes(x = outcome, y = RBD, fill = outcome)) +
+  geom_boxplot(alpha = 0.75, width = 0.4, outlier.shape = 21) +
+  scale_fill_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(title = "RBD vs match outcome",
+       subtitle = "Higher remaining batting depth tends to correlate with winning",
+       x = "Match outcome (batting team)", y = "RBD score") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none", plot.subtitle = element_text(colour = "grey50", size = 10))
+
+
+# ============================================================
+# ---- FIGURE 14: RSO vs Match Outcome Boxplot ----
+# ============================================================
+ggplot(snapshot_df_enhanced %>% mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")),
+       aes(x = outcome, y = RSO, fill = outcome)) +
+  geom_boxplot(alpha = 0.75, width = 0.4, outlier.shape = 21) +
+  scale_fill_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(title = "RSO vs match outcome",
+       subtitle = "Higher remaining specialist bowling overs correlate with bowling team dominance",
+       x = "Match outcome (batting team)", y = "RSO score") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none", plot.subtitle = element_text(colour = "grey50", size = 10))
+
+
+# ============================================================
+# ---- FIGURE 15: Overlaid ROC Curves – Part A vs Part B ----
+# ============================================================
+roc_a_df <- data.frame(FPR = 1 - roc_curve$specificities,  TPR = roc_curve$sensitivities,
+                       Model = paste0("Part A LR (AUC = ", round(auc(roc_curve), 3), ")"))
+roc_c_df <- data.frame(FPR = 1 - roc_c_log$specificities,  TPR = roc_c_log$sensitivities,
+                       Model = paste0("Part B LR (AUC = ", round(auc(roc_c_log), 3), ")"))
+roc_tree_a_df <- data.frame(FPR = 1 - roc_tree$specificities, TPR = roc_tree$sensitivities,
+                             Model = paste0("Part A DT (AUC = ", round(auc(roc_tree), 3), ")"))
+roc_tree_c_df <- data.frame(FPR = 1 - roc_c_tree$specificities, TPR = roc_c_tree$sensitivities,
+                             Model = paste0("Part B DT (AUC = ", round(auc(roc_c_tree), 3), ")"))
+roc_all <- bind_rows(roc_a_df, roc_c_df, roc_tree_a_df, roc_tree_c_df)
+
+ggplot(roc_all, aes(x = FPR, y = TPR, colour = Model, linetype = Model)) +
+  geom_line(linewidth = 1.1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60", linewidth = 0.7) +
+  scale_colour_manual(values = c("steelblue", "#1D9E75", "#E07B39", "#9B59B6")) +
+  scale_linetype_manual(values = c("solid", "solid", "dashed", "dashed")) +
+  labs(title = "ROC Curves: Part A vs Part B Models",
+       subtitle = "Logistic regression (solid) and decision tree (dashed)",
+       x = "1 - Specificity (False Positive Rate)", y = "Sensitivity (True Positive Rate)",
+       colour = "Model", linetype = "Model") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position.inside = c(0.65, 0.25),
+        legend.background = element_rect(fill = "white", colour = "grey80"),
+        plot.subtitle = element_text(colour = "grey50", size = 10))
+
+
+# ============================================================
+# ---- FIGURE 16: Logistic Regression Coefficients – Part B ----
+# ============================================================
+tidy(log_model_c) %>%
+  filter(term != "(Intercept)", !is.na(estimate)) %>%
+  filter(term %in% c("pressure_ratio", "runs_per_ball", "wicket_rate",
+                     "RBD_norm", "RSO_norm", "rbd_pressure")) %>%
+  mutate(
+    term_label = recode(term,
+                        pressure_ratio = "Pressure Ratio (RRR / RR)",
+                        runs_per_ball  = "Runs per Ball Required",
+                        wicket_rate    = "Wicket Rate",
+                        RBD_norm       = "Remaining Batting Depth (RBD)",
+                        RSO_norm       = "Remaining Specialist Overs (RSO)",
+                        rbd_pressure   = "RBD × Pressure (Interaction)"),
+    direction = ifelse(estimate > 0, "Positive", "Negative")
+  ) %>%
+  ggplot(aes(x = reorder(term_label, estimate), y = estimate, fill = direction)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate + std.error),
+                width = 0.2, colour = "grey40") +
+  coord_flip() +
+  scale_fill_manual(values = c("Positive" = "#1D9E75", "Negative" = "#D85A30")) +
+  labs(title = "Logistic Regression Coefficients - Part B",
+       subtitle = "Error bars show ±1 standard error | Positive = higher win probability",
+       x = NULL, y = "Coefficient estimate", fill = "Direction") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10), legend.position = "top")
+
+
+# ============================================================
+# ---- FIGURE 17: RBD vs Required Run Rate Scatter ----
+# ============================================================
+snapshot_df_enhanced %>%
+  mutate(Outcome = ifelse(match_winner == 1, "Won", "Lost")) %>%
+  filter(!is.na(Outcome)) %>%
+  ggplot(aes(x = required_run_rate, y = RBD, colour = Outcome)) +
+  geom_point(alpha = 0.55, size = 1.8) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 1.2) +
+  scale_colour_manual(values = c("Won" = "#1D9E75", "Lost" = "#D85A30")) +
+  labs(title = "Remaining Batting Depth vs Required Run Rate at 13 Overs",
+       subtitle = "Points coloured by match outcome | LOESS smoother per group",
+       x = "Required run rate (runs per over)", y = "RBD score", colour = "Outcome") +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(colour = "grey50", size = 10), legend.position = "top")
+
+
+# ============================================================
+# ---- FIGURE 18: Confusion Matrix – Part B Decision Tree (tuned) ----
+# ============================================================
+cm_data <- data.frame(
+  Predicted = factor(c("Win", "Win", "Loss", "Loss"), levels = c("Win", "Loss")),
+  Actual    = factor(c("Win", "Loss", "Win", "Loss"), levels = c("Win", "Loss")),
+  Count     = c(53, 5, 7, 48),
+  Label     = c("TP\n53", "FP\n5", "FN\n7", "TN\n48"),
+  Fill      = c("True Positive", "Error", "Error", "True Negative")
+)
+ggplot(cm_data, aes(x = Actual, y = Predicted, fill = Fill)) +
+  geom_tile(colour = "white", linewidth = 1.5) +
+  geom_text(aes(label = Label), size = 7, fontface = "bold", colour = "white") +
+  scale_fill_manual(values = c("True Positive" = "#1D9E75", "True Negative" = "#378ADD",
+                               "Error" = "#D85A30")) +
+  scale_x_discrete(position = "top") +
+  labs(title = "Confusion Matrix -- Part B Decision Tree",
+       subtitle = "Accuracy = 89.4% | Kappa = 0.787 | Sensitivity = 91.4% | Specificity = 87.3%",
+       x = "Actual outcome", y = "Predicted outcome") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        axis.text = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(colour = "grey50", size = 10),
+        panel.grid = element_blank())
+
+
+# ============================================================
+# ---- TABLE 1: Model Performance Comparison ----
+# ============================================================
+model_comparison_table <- tibble(
+  Model = c(
+    "Part A — Logistic Regression",
+    "Part A — Decision Tree",
+    "Part B — Logistic Regression (default 0.50)",
+    "Part B — Logistic Regression (tuned 0.41)",
+    "Part B — Decision Tree (default 0.50)",
+    "Part B — Decision Tree (tuned 0.72)"
+  ),
+  Accuracy    = c("84.6%", "76.9%", "84.1%", "87.6%", "83.2%", "89.4%"),
+  AUC         = c("0.884", "0.834", "0.913", "0.913", "0.910", "0.910"),
+  Sensitivity = c("82.4%", "70.6%", "—",     "93.1%", "—",     "91.4%"),
+  Specificity = c("86.8%", "83.0%", "—",     "81.8%", "—",     "87.3%"),
+  Kappa       = c("0.692", "0.537", "—",     "0.751", "—",     "0.787")
+)
+kable(model_comparison_table,
+      caption = "Table 1: Model performance comparison across Part A and Part B",
+      align   = c("l", "c", "c", "c", "c", "c"))
+
+
+# ============================================================
+# ---- TABLE 2: Player Role Summary Statistics ----
+# ============================================================
+role_summary <- player_stats %>%
+  filter(role != "Other") %>%
+  group_by(Role = role) %>%
+  summarise(
+    `N players`      = n(),
+    `Batted (n)`     = sum(balls_faced > 0),
+    `Mean SR`        = round(mean(strike_rate,    na.rm = TRUE), 1),
+    `Median SR`      = round(median(strike_rate,  na.rm = TRUE), 1),
+    `Mean W_batter`  = round(mean(W_batter,       na.rm = TRUE), 3),
+    `Bowled (n)`     = sum(balls_bowled > 0),
+    `Mean economy`   = round(mean(economy_rate,   na.rm = TRUE), 2),
+    `Mean W_bowler`  = round(mean(W_bowler,       na.rm = TRUE), 3),
+    .groups = "drop"
+  )
+kable(role_summary,
+      caption = "Table 2: Summary statistics of player weightage scores by role",
+      align   = c("l", rep("c", 8)))
+
+
+# ============================================================
+# ---- TABLE 3: Dataset Overview ----
+# ============================================================
+dataset_summary <- balls %>%
+  summarise(
+    `Total matches`    = as.character(n_distinct(match_id)),
+    `Total deliveries` = as.character(n()),
+    `Seasons covered`  = paste(format(min(as.Date(date)), "%Y"), "-",
+                               format(max(as.Date(date)), "%Y")),
+    `Teams`            = as.character(n_distinct(team)),
+    `Unique venues`    = as.character(n_distinct(venue)),
+    `Total players`    = as.character(n_distinct(batter))
+  )
+
+snapshot_summary <- snapshot_df %>%
+  summarise(
+    `Matches with 2nd innings snapshot` = as.character(n()),
+    `Batting team wins`                 = as.character(sum(match_winner == 1, na.rm = TRUE)),
+    `Batting team losses`               = as.character(sum(match_winner == 0, na.rm = TRUE)),
+    `Win rate (batting team)`           = paste0(round(mean(match_winner == 1, na.rm = TRUE) * 100, 1), "%")
+  )
+
+bind_rows(
+  dataset_summary  %>% pivot_longer(everything(), names_to = "Attribute", values_to = "Value"),
+  snapshot_summary %>% pivot_longer(everything(), names_to = "Attribute", values_to = "Value")
+) %>%
+  kable(caption = "Table 3: Dataset summary -- BBL ball-by-ball data and 13-over snapshot",
+        col.names = c("Attribute", "Value"), align = c("l", "c"))
+
+```
+
+```{r, echo=FALSE}
+library(DiagrammeR)
+
+grViz("
+digraph {
+
+  graph [layout = dot, rankdir = TB]
+
+  node [shape = rectangle, style = rounded]
+
+  A [label='Start']
+  B [label='Load BBL JSON Data']
+  C [label='Data Cleaning & Standardisation']
+  D [label='Ball-by-Ball Dataset']
+  E [label='13-Over Snapshot Features\\n(Runs, Wickets, RRR, etc.)']
+
+  F1 [label='Part A: Baseline Model\\n(No additional features)']
+  F2 [label='Part B: Feature Engineering']
+
+  G [label='Player Statistics']
+  H [label='Role Classification']
+  I [label='Weight Calculation\\n(W_batter, W_bowler)']
+  J [label='RBD & RSO']
+
+  K [label='Final Dataset']
+
+  L1 [label='Part A Models\\n(Logistic, Tree)']
+  L2 [label='Part B Models\\n(Logistic, Tree)']
+
+  M [label='Evaluation\\n(Accuracy, ROC, AUC)']
+  N [label='End']
+
+  A -> B -> C -> D -> E
+
+  E -> F1
+  E -> F2
+
+  F1 -> L1
+
+  F2 -> G -> H -> I -> J -> K -> L2
+
+  L1 -> M
+  L2 -> M
+
+  M -> N
+}
+")
+```
+
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# --- Table 1: Summary Statistics of RBD and RSO ---
+snapshot_df_enhanced %>%
+  summarise(
+    mean_RBD = mean(RBD, na.rm = TRUE),
+    sd_RBD   = sd(RBD,   na.rm = TRUE),
+    mean_RSO = mean(RSO, na.rm = TRUE),
+    sd_RSO   = sd(RSO,   na.rm = TRUE)
+  ) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Summary Statistics of RBD and RSO",
+    col.names = c("Mean RBD", "SD RBD", "Mean RSO", "SD RSO"),
+    booktabs = TRUE,
+    align    = c("r", "r", "r", "r")
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif")
+```
+
+
+
+```{r}
+
+
+# --- Table 2: Feature Comparison by Match Outcome ---
+snapshot_df_enhanced %>%
+  mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")) %>%
+  group_by(outcome) %>%
+  summarise(
+    avg_RBD = mean(RBD,               na.rm = TRUE),
+    avg_RSO = mean(RSO,               na.rm = TRUE),
+    avg_RRR = mean(required_run_rate, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Feature Comparison by Match Outcome",
+    col.names = c("Outcome", "Avg RBD", "Avg RSO", "Avg RRR"),
+    booktabs = TRUE,
+    align    = c("l", "r", "r", "r")
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif")
+```
+
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# --- Table 1: Summary Statistics of RBD and RSO (with Pearson correlations) ---
+snapshot_df_enhanced %>%
+  summarise(
+    mean_RBD  = mean(RBD, na.rm = TRUE),
+    sd_RBD    = sd(RBD,   na.rm = TRUE),
+    cor_RBD   = cor(RBD, match_winner, use = "complete.obs", method = "pearson"),
+    mean_RSO  = mean(RSO, na.rm = TRUE),
+    sd_RSO    = sd(RSO,   na.rm = TRUE),
+    cor_RSO   = cor(RSO, match_winner, use = "complete.obs", method = "pearson")
+  ) %>%
+  knitr::kable(
+    digits    = 3,
+    caption   = "Summary Statistics and Pearson Correlation with Match Outcome",
+    col.names = c("Mean RBD", "SD RBD", "r (RBD)", "Mean RSO", "SD RSO", "r (RSO)"),
+    booktabs  = TRUE,
+    align     = c("r", "r", "r", "r", "r", "r")
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif") %>%
+  add_header_above(c("Remaining Batting Depth" = 3, "Remaining Specialist Overs" = 3))
+
+
+# --- Table 2: Feature Comparison by Match Outcome (with Pearson correlations) ---
+
+# Pre-compute correlations (single values, not group-level)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# --- Compute Pearson correlations LIVE from data ---
+cor_RBD <- cor(snapshot_df_enhanced$RBD, 
+               snapshot_df_enhanced$match_winner,
+               use = "complete.obs", method = "pearson")
+
+cor_RSO <- cor(snapshot_df_enhanced$RSO, 
+               snapshot_df_enhanced$match_winner,
+               use = "complete.obs", method = "pearson")
+
+cor_RRR <- cor(snapshot_df_enhanced$required_run_rate, 
+               snapshot_df_enhanced$match_winner,
+               use = "complete.obs", method = "pearson")
+
+# --- Build group summary (filter NA match_winner FIRST) ---
+outcome_table <- snapshot_df_enhanced %>%
+  filter(!is.na(match_winner)) %>%          # <-- THIS removes the NA row
+  mutate(outcome = ifelse(match_winner == 1, "Won", "Lost")) %>%
+  group_by(outcome) %>%
+  summarise(
+    avg_RBD = median(RBD,               na.rm = TRUE),
+    avg_RSO = median(RSO,               na.rm = TRUE),
+    avg_RRR = median(required_run_rate, na.rm = TRUE),
+    .groups = "drop"
+)%>%
+  mutate(across(c(avg_RBD, avg_RSO, avg_RRR), ~ round(., 3)),
+         across(everything(), as.character))
+
+# --- Append Pearson r row ---
+cor_row <- tibble(
+  outcome = "Pearson r",
+  avg_RBD = as.character(round(cor_RBD, 3)),
+  avg_RSO = as.character(round(cor_RSO, 3)),
+  avg_RRR = as.character(round(cor_RRR, 3))
+)
+
+outcome_table %>%
+  bind_rows(cor_row) %>%
+  knitr::kable(
+    caption   = "Feature Comparison by Match Outcome with Pearson Correlation",
+    col.names = c("Outcome", "Median_RBD", "Median_RSO", "Median_Req. Run Rate"),
+    booktabs  = TRUE,
+    align     = c("l", "r", "r", "r")
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif") %>%
+  row_spec(3, italic = TRUE, color = "gray40")
+
+```
+
+  
+
+
+```{r data_leakage_demonstration}
+# ============================================================
+# DATA LEAKAGE DEMONSTRATION
+# ============================================================
+# The original W_batter and W_bowler are computed from ALL matches
+# a player has ever appeared in, including the match being predicted.
+# This means that when we evaluate a match, the player weights
+# already "know" what happened in that match — a form of data leakage.
+#
+# To demonstrate this, we:
+#   1. Randomly sample 5 matches
+#   2. For each sampled match, get the list of players in that match
+#   3. Recompute W_batter and W_bowler *excluding* that match's stats
+#   4. Compare the leave-one-out weights to the original (leaked) weights
+# ============================================================
+
+set.seed(99)
+
+# ---- Step 1: Sample 5 match IDs ----
+sample_match_ids <- sample(unique(balls$match_id), 5)
+cat("Sampled match IDs:\n"); print(sample_match_ids)
+
+# ---- Helper: compute leave-one-out W_batter and W_bowler ----
+compute_loo_weights <- function(focal_match) {
+
+  # Batting summary excluding focal match
+  bat_loo <- balls %>%
+    filter(match_id != focal_match) %>%
+    group_by(match_id, batter) %>%
+    summarise(
+      balls_faced = n(),
+      runs        = sum(runs_batter, na.rm = TRUE),
+      fours       = sum(runs_batter == 4, na.rm = TRUE),
+      sixes       = sum(runs_batter == 6, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(player = batter) %>%
+    summarise(
+      balls_faced = sum(balls_faced),
+      runs        = sum(runs),
+      fours       = sum(fours),
+      sixes       = sum(sixes),
+      .groups = "drop"
+    )
+
+  # Bowling summary excluding focal match
+  bowl_loo <- balls %>%
+    filter(match_id != focal_match) %>%
+    group_by(match_id, bowler) %>%
+    summarise(
+      balls_bowled  = n(),
+      wickets       = sum(wicket & !is.na(wicket_player_out), na.rm = TRUE),
+      runs_conceded = sum(runs_total, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(player = bowler) %>%
+    summarise(
+      balls_bowled  = sum(balls_bowled),
+      wickets       = sum(wickets),
+      runs_conceded = sum(runs_conceded),
+      .groups = "drop"
+    )
+
+  # Batting position excluding focal match
+  bat_pos_loo <- balls %>%
+    filter(match_id != focal_match, innings %in% c(1, 2)) %>%
+    group_by(match_id, innings, batter) %>%
+    summarise(first_ball = min(delivery), .groups = "drop") %>%
+    group_by(match_id, innings) %>%
+    mutate(batting_position = rank(first_ball, ties.method = "first")) %>%
+    ungroup() %>%
+    group_by(player = batter) %>%
+    summarise(
+      avg_batting_position = round(mean(batting_position, na.rm = TRUE), 2),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      position_weight = pmax(pmin((11 - avg_batting_position) / 10, 1), 0)
+    )
+
+  # Combine and compute LOO weights
+  ps_loo <- full_join(bat_loo, bowl_loo, by = "player") %>%
+    replace_na(list(
+      balls_faced = 0, runs = 0, fours = 0, sixes = 0,
+      balls_bowled = 0, wickets = 0, runs_conceded = 0
+    )) %>%
+    left_join(bat_pos_loo %>% select(player, avg_batting_position, position_weight),
+              by = "player") %>%
+    mutate(
+      position_weight = replace_na(position_weight, 0),
+      strike_rate     = ifelse(balls_faced > 0, (runs / balls_faced) * 100, NA_real_),
+      sr_position_raw = case_when(
+        balls_faced > 0 ~ strike_rate * position_weight,
+        TRUE            ~ 0
+      ),
+      W_batter_loo = case_when(
+        balls_faced > 0 ~
+          (sr_position_raw - min(sr_position_raw[balls_faced > 0], na.rm = TRUE)) /
+          (max(sr_position_raw[balls_faced > 0], na.rm = TRUE) -
+           min(sr_position_raw[balls_faced > 0], na.rm = TRUE)),
+        balls_faced == 0 ~ 0
+      ),
+      economy_rate     = ifelse(balls_bowled > 0, (runs_conceded / balls_bowled) * 6, NA_real_),
+      bowling_sr       = ifelse(wickets > 0, balls_bowled / wickets, NA_real_),
+      economy_score    = ifelse(balls_bowled > 0, max(economy_rate, na.rm = TRUE) - economy_rate, 0),
+      bowling_sr_score = ifelse(!is.na(bowling_sr), max(bowling_sr, na.rm = TRUE) - bowling_sr, 0),
+      econ_norm_loo = ifelse(
+        balls_bowled > 0,
+        (economy_score - min(economy_score[balls_bowled > 0], na.rm = TRUE)) /
+        (max(economy_score[balls_bowled > 0], na.rm = TRUE) -
+         min(economy_score[balls_bowled > 0], na.rm = TRUE)),
+        0
+      ),
+      sr_norm_loo = ifelse(
+        !is.na(bowling_sr),
+        (bowling_sr_score - min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)) /
+        (max(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE) -
+         min(bowling_sr_score[!is.na(bowling_sr)], na.rm = TRUE)),
+        0
+      ),
+      W_bowler_loo = 0.5 * econ_norm_loo + 0.5 * sr_norm_loo
+    ) %>%
+    select(player, W_batter_loo, W_bowler_loo)
+
+  # Get players in the focal match and join original weights
+  focal_players <- playing_xi %>%
+    filter(match_id == focal_match) %>%
+    pull(player)
+
+  ps_loo %>%
+    filter(player %in% focal_players) %>%
+    left_join(player_stats %>% select(player, W_batter, W_bowler), by = "player") %>%
+    mutate(
+      match_id       = focal_match,
+      delta_W_batter = W_batter_loo - W_batter,
+      delta_W_bowler = W_bowler_loo - W_bowler
+    ) %>%
+    select(match_id, player,
+           W_batter, W_batter_loo, delta_W_batter,
+           W_bowler, W_bowler_loo, delta_W_bowler)
+}
+
+# ---- Step 2: Run for all 5 sampled matches ----
+leakage_comparison <- map_dfr(sample_match_ids, compute_loo_weights)
+
+# ---- Step 3: Per-match summary table ----
+leakage_comparison %>%
+  group_by(match_id) %>%
+  summarise(
+    n_players            = n(),
+    mean_delta_W_batter  = round(mean(delta_W_batter,        na.rm = TRUE), 4),
+    sd_delta_W_batter    = round(sd(delta_W_batter,          na.rm = TRUE), 4),
+    max_abs_delta_batter = round(max(abs(delta_W_batter),    na.rm = TRUE), 4),
+    mean_delta_W_bowler  = round(mean(delta_W_bowler,        na.rm = TRUE), 4),
+    sd_delta_W_bowler    = round(sd(delta_W_bowler,          na.rm = TRUE), 4),
+    max_abs_delta_bowler = round(max(abs(delta_W_bowler),    na.rm = TRUE), 4),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(
+    caption   = "Per-match average weight shift: LOO vs Original (non-zero = data leakage confirmed)",
+    col.names = c("Match ID", "Players",
+                  "Mean ΔW_bat", "SD ΔW_bat", "Max |ΔW_bat|",
+                  "Mean ΔW_bowl", "SD ΔW_bowl", "Max |ΔW_bowl|"),
+    booktabs  = TRUE,
+    align     = c("l", rep("c", 7))
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif")
+
+# ---- Step 4: Full player-level table ----
+leakage_comparison %>%
+  mutate(across(where(is.numeric), ~ round(., 4))) %>%
+  knitr::kable(
+    caption   = "Player-level W_batter and W_bowler: Original (with leakage) vs Leave-One-Out",
+    col.names = c("Match ID", "Player",
+                  "W_bat (orig)", "W_bat (LOO)", "ΔW_bat",
+                  "W_bowl (orig)", "W_bowl (LOO)", "ΔW_bowl"),
+    booktabs  = TRUE,
+    align     = c("l", "l", rep("c", 6))
+  ) %>%
+  kableExtra::kable_classic(full_width = FALSE, html_font = "serif") %>%
+  kableExtra::collapse_rows(columns = 1, valign = "top")
+
+# ---- Step 5: Histogram of delta distributions ----
+leakage_comparison %>%
+  select(match_id, player, delta_W_batter, delta_W_bowler) %>%
+  pivot_longer(
+    cols      = c(delta_W_batter, delta_W_bowler),
+    names_to  = "metric",
+    values_to = "delta"
+  ) %>%
+  mutate(metric = recode(metric,
+                         delta_W_batter = "ΔW_batter",
+                         delta_W_bowler = "ΔW_bowler")) %>%
+  ggplot(aes(x = delta, fill = metric)) +
+  geom_histogram(bins = 20, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~ metric, ncol = 2, scales = "free_y") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40", linewidth = 0.8) +
+  scale_fill_manual(values = c("ΔW_batter" = "#1D9E75", "ΔW_bowler" = "#378ADD")) +
+  labs(
+    title    = "Data Leakage: Weight shift when focal match is excluded (LOO vs Original)",
+    subtitle = "Non-zero deltas confirm that including the focal match inflates/deflates player weights",
+    x        = "Δ Weight (LOO − Original)",
+    y        = "Number of players"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title      = element_text(size = 14, face = "bold"),
+    plot.subtitle   = element_text(colour = "grey50", size = 10),
+    legend.position = "none",
+    strip.text      = element_text(face = "bold")
+  )
+
+# ---- Step 6: Scatter — Original vs LOO ----
+p_batter <- ggplot(leakage_comparison, aes(x = W_batter, y = W_batter_loo, colour = match_id)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+  labs(
+    title    = "W_batter: Original vs Leave-One-Out",
+    subtitle = "Deviation from diagonal = leakage-induced bias",
+    x        = "W_batter (original — includes focal match)",
+    y        = "W_batter (LOO — focal match excluded)",
+    colour   = "Match ID"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey50", size = 10))
+
+p_bowler <- ggplot(leakage_comparison, aes(x = W_bowler, y = W_bowler_loo, colour = match_id)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+  labs(
+    title    = "Bowler Weightage: Original vs Leave-One-Out",
+    subtitle = "Deviation from diagonal = leakage-induced bias",
+    x        = "Bowler Weightage (original — includes focal match)",
+    y        = "Bowler Weightage (LOO — focal match excluded)",
+    colour   = "Match ID"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey50", size = 10))
+
+print(p_batter)
+print(p_bowler)
+
+# ---- Step 7: Interpretation ----
+cat(
+  "\n=== INTERPRETATION ===\n",
+  "Non-zero ΔW values confirm data leakage: a player's weight was influenced\n",
+  "by the very match being predicted. The effect is largest for players with\n",
+  "fewer career appearances, where one match is a large share of career data.\n",
+  "A proper pipeline should recompute W_batter and W_bowler using only\n",
+  "matches PRIOR to each focal match.\n"
+)
+```
+
+
+```{r}
+# ============================================================
+# ---- FIGURE 7: W_batter Distribution by Role (normalised y) ----
+# ============================================================
+ggplot(batter_weights %>% filter(role != "Other"), aes(x = W_batter, y = after_stat(density), fill = role)) +
+  geom_histogram(bins = 25, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3) +
+  scale_fill_manual(values = c("Batter" = "#1D9E75", "Allrounder" = "#EF9F27", "Bowler" = "#378ADD")) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(
+    title    = "Batter weightage distribution (W_batter) by role",
+    subtitle = "Batters/Allrounders normalised by SR | Bowlers: 0 if never batted",
+    x        = "Batter weight (0 = no batting contribution, 1 = highest SR)",
+    y        = "Density (proportion within role)",
+    fill     = "Role"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle   = element_text(colour = "grey50", size = 10),
+    strip.text      = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+# ============================================================
+# ---- FIGURE 8: W_bowler Distribution by Role (normalised y) ----
+# ============================================================
+ggplot(player_stats %>% filter(role != "Other"), aes(x = W_bowler, y = after_stat(density), fill = role)) +
+  geom_histogram(bins = 25, colour = "white", linewidth = 0.3, alpha = 0.85) +
+  facet_wrap(~role, ncol = 3) +
+  scale_fill_manual(values = c("Bowler" = "#378ADD", "Allrounder" = "#EF9F27", "Batter" = "#1D9E75")) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(
+    title    = "Bowler weightage distribution (W_bowler) by role",
+    subtitle = "Economy (50%) + bowling SR (50%) | 0 = never bowled, 1 = strongest bowler",
+    x        = "Bowler weight (0 = no bowling contribution, 1 = strongest)",
+    y        = "Density (proportion within role)",
+    fill     = "Role"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.subtitle   = element_text(colour = "grey50", size = 10),
+    strip.text      = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
